@@ -1538,15 +1538,68 @@ async def sangmatchtest(
 
 from pathlib import Path
 
+from pathlib import Path
+
 @bot.tree.command(name="sangexport", description="Export the most recently generated teams to a text file.")
 @app_commands.checks.has_any_role("Administrators", "Clan Staff", "Senior Staff", "Staff", "Trial Staff")
 async def sangexport(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True, thinking=True)
+
     global last_generated_teams
     teams = last_generated_teams if 'last_generated_teams' in globals() else None
     if not teams:
         await interaction.followup.send("⚠️ No teams found from this session.", ephemeral=True)
         return
+
+    guild = interaction.guild
+
+    def resolve_discord_id(p: dict):
+        sname = sanitize_nickname(p.get("user_name", ""))
+        mid = find_member_id_by_sanitized_nickname(guild, sname)
+        if mid:
+            return mid
+        uid_str = str(p.get("user_id") or p.get("Discord_ID") or "")
+        return int(uid_str) if uid_str.isdigit() else None
+
+    lines = []
+    for i, team in enumerate(teams, start=1):
+        lines.append(f"Team {i}")
+        for p in team:
+            sname = sanitize_nickname(p.get("user_name", "Unknown"))
+            mid = resolve_discord_id(p)
+            id_text = str(mid) if mid is not None else "UnknownID"
+            lines.append(f"  - {sname} — ID: {id_text}")
+        lines.append("")
+
+    txt = "
+".join(lines)
+
+    export_dir = Path(os.getenv("SANG_EXPORT_DIR", "/mnt/data"))
+    try:
+        export_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        export_dir = Path("/tmp")
+        export_dir.mkdir(parents=True, exist_ok=True)
+
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    CST = ZoneInfo("America/Chicago")
+    ts = datetime.now(CST).strftime("%Y%m%d_%H%M%S")
+    outpath = export_dir / f"sanguine_teams_{ts}.txt"
+    with open(outpath, "w", encoding="utf-8") as f:
+        f.write(txt)
+
+    preview = "
+".join(lines[:min(12, len(lines))])
+    await interaction.followup.send(
+        content=f"📄 Exported teams to **{outpath.name}**:
+```
+{preview}
+```",
+        file=discord.File(str(outpath), filename=outpath.name),
+        ephemeral=True
+    )
+return
 
     guild = interaction.guild
 
@@ -1695,4 +1748,3 @@ async def on_ready():
 # 🔹 Run Bot
 # ---------------------------
 bot.run(os.getenv('DISCORD_BOT_TOKEN'))
-
