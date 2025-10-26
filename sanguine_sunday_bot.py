@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone, time as dt_time
 from zoneinfo import ZoneInfo
 import gspread.exceptions
 import math
+from pathlib import Path # Import Path for export function
 from zoneinfo import ZoneInfo
 CST = ZoneInfo('America/Chicago')
 
@@ -756,17 +757,24 @@ def matchmaking_algorithm(available_raiders: List[Dict[str, Any]]) -> List[List[
     )
 
     mentors = [p for p in available_raiders if normalize_role(p) == "mentor"]
-    high_pro = [p for p in available_raiders if normalize_role(p) == "highly proficient"]
-    pro = [p for p in available_raiders if normalize_role(p) == "proficient"]
+    strong_pool = [p for p in available_raiders if prof_rank(p) <= PROF_ORDER["proficient"]] # HP/Pro
     learners = [p for p in available_raiders if normalize_role(p) == "learner"]
     news = [p for p in available_raiders if normalize_role(p) == "new"]
 
-    # Combine HP and Pro into one pool, sorted by rank/KC
-    strong_pool = sorted(high_pro + pro, key=lambda p: (prof_rank(p), -int(p.get("kc", 0))))
+    # Remove Mentors from strong pool if they snuck in (they shouldn't if filters are right)
+    strong_pool = [p for p in strong_pool if normalize_role(p) != 'mentor'] 
+    
+    # Sort strong pool for better distribution
+    strong_pool.sort(key=lambda p: (prof_rank(p), -int(p.get("kc", 0))))
     
     # 2. Team Initialization: Create one team per Mentor.
     if not mentors:
-        return [], [] # No teams, no stranded players (since no teams were formed)
+        # If no mentors, we can only make teams of 5 from the strongest players available.
+        # This is outside the primary scope but prevents a crash.
+        if len(available_raiders) >= 4:
+            teams = [available_raiders[i:i + 5] for i in range(0, len(available_raiders), 5)]
+            return teams, []
+        return [], available_raiders
         
     num_teams = len(mentors)
     teams = [[] for _ in range(num_teams)]
@@ -774,7 +782,11 @@ def matchmaking_algorithm(available_raiders: List[Dict[str, Any]]) -> List[List[
     # 3. Anchor Assignment: Mentor + New/Learner + HP/Pro Support
     
     # 3a. Assign Mentors (Pass 1)
-    teams = [[mentors.pop(0)] for _ in range(num_teams)] 
+    # Use a copy of mentors to initialize teams, then remove from source list
+    for i in range(num_teams):
+        teams[i].append(mentors[i])
+    mentors_source = mentors[:] # Keep a clean list of all mentors
+    mentors = [] # Empty the source list
 
     # 3b. Assign New players (Pass 2) - Prioritize placing 1 New player per team
     for i in range(num_teams):
@@ -785,8 +797,7 @@ def matchmaking_algorithm(available_raiders: List[Dict[str, Any]]) -> List[List[
             teams[i].append(learners.pop(0))
 
     # 3c. Assign 1 Pro/HP to every Mentor team (Pass 3) - Provide support layer
-    # Distribute strongest first to teams with the lowest total KC/rank if possible
-    # We'll stick to a simple round-robin for strong distribution to ensure balance
+    # Distribute strongest first (strong_pool is already sorted)
     for i in range(num_teams):
         if strong_pool:
             teams[i].append(strong_pool.pop(0))
@@ -796,13 +807,13 @@ def matchmaking_algorithm(available_raiders: List[Dict[str, Any]]) -> List[List[
     # Consolidated pool of remaining players, prioritized for filling.
     leftovers = strong_pool + learners + news
     
-    # Distribute remaining players round-robin, prioritizing teams up to size 5
-    # The order of the leftovers list provides natural prioritization (HP/Pro > Learner > New)
-    i = 0
+    # Distribute remaining players round-robin, prioritizing size 4 teams
+    current_team_idx = 0
     while leftovers:
         player = leftovers.pop(0)
         
         # Find the smallest team that is under size 5
+        # Sort by current size (ascending) to promote balance
         target_indices = sorted(range(num_teams), key=lambda idx: len(teams[idx]))
         placed = False
 
@@ -826,7 +837,7 @@ def matchmaking_algorithm(available_raiders: List[Dict[str, Any]]) -> List[List[
                 break
         
         if not placed:
-            # If player couldn't be placed (all teams size 5, or conflicts), put them back
+            # If player couldn't be placed, put them back and stop filling (will become stranded)
             leftovers.insert(0, player)
             break 
             
@@ -835,7 +846,7 @@ def matchmaking_algorithm(available_raiders: List[Dict[str, Any]]) -> List[List[
     # Remaining players are the final leftovers (stranded)
     stranded = leftovers 
     
-    # Try to form a single last team of 3 or 4 from leftovers if there's enough skill
+    # Try to form a single last team of 3 or 4 from stranded players
     if len(stranded) >= 3 and len(stranded) <= 4:
         # Check 3-man team rule (no New or Learner w/out Scythe)
         if len(stranded) == 3:
@@ -845,7 +856,7 @@ def matchmaking_algorithm(available_raiders: List[Dict[str, Any]]) -> List[List[
             if not has_new and not has_unsupported_learner:
                 teams.append(stranded)
                 stranded = []
-        # If 4 leftovers, just form a team (assuming it has Mentor/HP support from previous passes)
+        # If 4 leftovers, just form a team (as long as it doesn't violate the 3-man rules)
         elif len(stranded) == 4:
              teams.append(stranded)
              stranded = []
@@ -871,6 +882,7 @@ def matchmaking_algorithm(available_raiders: List[Dict[str, Any]]) -> List[List[
         # Rule Check 2: No Learner in 3s without Scythe
         has_unsupported_learner = any(normalize_role(p) == 'learner' and not p.get('has_scythe') for p in team)
         if has_unsupported_learner and team_size == 3:
+            # This is a bit aggressive but ensures safety: if a learner is in a 3-man without scythe, the team is invalid
             stranded.extend(team)
             continue
             
