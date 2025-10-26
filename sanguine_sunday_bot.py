@@ -1320,14 +1320,20 @@ async def sangmatchtest(
 
     if vc_member_ids:
         assigned_ids = {p["user_id"] for t in teams for p in t}
-        unassigned_ids = [uid for uid in vc_member_ids or [] if uid not in assigned_ids]
+        unassigned_ids = [uid for uid in (vc_member_ids or []) if uid not in assigned_ids]
+    
         if unassigned_ids:
             names = []
             for uid in unassigned_ids:
                 m = guild.get_member(int(uid))
                 names.append(f"{m.display_name} (VC/No Signup)" if m else f"User {uid} (VC/No Signup)")
-            embed.add_field(name="Users in VC but not Signed Up", value="
-".join(names), inline=False)
+    
+            embed.add_field(
+                name="Users in VC but not Signed Up",
+                value="\n".join(names),
+                inline=False
+            )
+
 
     # Store teams globally for /sangexport
     global last_generated_teams
