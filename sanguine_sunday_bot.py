@@ -180,7 +180,7 @@ class UserSignupForm(Modal, title="Sanguine Sunday Signup"):
     
     kc = TextInput(
         label="What is your N͟o͟r͟m͟a͟l͟ Mode ToB KC?",
-        placeholder="0-1 = New, 2-49 = Learner, 50-149 = Proficient, 150+ = Highly Proficient",
+        placeholder="0-10 = New, 11-25 = Learner, 26-100 = Proficient, 100+ = Highly Proficient",
         style=discord.TextStyle.short,
         max_length=5,
         required=True
@@ -552,58 +552,6 @@ class SignupView(View):
 
 # --- Helper Functions ---
 
-# --- Name sanitization + ID resolution helpers ---
-
-SAFE_NAME_CHARS = r"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 -_."
-
-def _strip_paren_and_slash(s: str) -> str:
-    if not s:
-        return ""
-    # remove anything in parentheses (…) or brackets […] (non-greedy)
-    s = re.sub(r"\(.*?\)|\[.*?\]", "", s)
-    # remove anything after a literal slash '/'
-    s = s.split("/", 1)[0]
-    return s
-
-def sanitize_nickname(name: str) -> str:
-    """
-    Spreadsheet-safe nickname:
-      - drop (...) and [...] segments
-      - drop anything after '/'
-      - remove special chars !@#$%^&*()/?><'";:[]{}\|=+-
-      - collapse spaces, trim
-    """
-    s = _strip_paren_and_slash(name or "")
-    # remove forbidden/special characters
-    s = re.sub(r"[!@#$%^&*()/?><'\";:\[\]{}\|=+\-]", "", s)
-    # keep only a conservative allowed set; replace others with space
-    s = "".join(ch if ch in SAFE_NAME_CHARS else " " for ch in s)
-    # collapse whitespace
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
-
-def find_member_id_by_sanitized_nickname(guild: discord.Guild, sanitized: str) -> Optional[int]:
-    """
-    Try to find a member by comparing the sanitized spreadsheet nickname
-    against sanitized Guild display names.
-    """
-    if not guild or not sanitized:
-        return None
-    target = sanitize_nickname(sanitized).lower()
-    # exact sanitized match first
-    for m in guild.members:
-        if sanitize_nickname(m.display_name).lower() == target:
-            return m.id
-    # fallback: try username too
-    for m in guild.members:
-        if sanitize_nickname(str(m)).lower() == target:
-            return m.id
-    return None
-
-def freeze_icon(p: dict) -> str:
-    return " 🧊" if str(p.get("learning_freeze", "")).lower() in ("true", "1", "yes") else ""
-
-
 # --- Sanguine Sunday VC/Channel Config ---
 SANG_VC_CATEGORY_ID = 1376645103803830322  # Category for auto-created team voice channels
 SANG_POST_CHANNEL_ID = 1338295765759688767  # Default text channel to post teams
@@ -613,16 +561,16 @@ def normalize_role(p: dict) -> str:
     prof = str(p.get("proficiency","")).strip().lower()
     if prof == "mentor":
         return "mentor"
-    # Otherwise infer from KC ranges
+    # Otherwise infer from KC ranges (event rules)
     try:
         kc = int(p.get("kc") or p.get("KC") or 0)
     except Exception:
         kc = 0
-    if kc <= 1:
+    if kc <= 10:
         return "new"
-    if 2 <= kc <= 25:
+    if 11 <= kc <= 25:
         return "learner"
-    if 26 <= kc <= 149:
+    if 26 <= kc <= 100:
         return "proficient"
     return "highly proficient"
 
@@ -906,6 +854,60 @@ async def sangmatch(interaction: discord.Interaction, voice_channel: Optional[di
         enforce_learner_3_and_5(teams)
         split_freeze_learners(teams)
 
+
+
+def enforce_min_team_size_and_new_support(teams):
+    """Ensure no team < 4, and every team with a New has Mentor + Pro/HP."""
+    def role_of(p): return normalize_role(p)
+    def is_new(p): return role_of(p) == "new"
+    def is_pro_or_hp(p): return role_of(p) in ("proficient","highly proficient")
+    def is_mentor(p): return role_of(p) == "mentor"
+
+    # First, try to merge undersized teams (<4) into others
+    changed = True
+    while changed:
+        changed = False
+        for i, t in enumerate(list(teams)):
+            if len(t) > 0 and len(t) < 4:
+                # Prefer to move members (non-new if possible) to the smallest teams <5
+                movables = [idx for idx, x in enumerate(t) if not is_new(x)] or list(range(len(t)))
+                while movables and len(t) < 4:
+                    m_idx = movables.pop(0)
+                    member = t.pop(m_idx)
+                    placed = False
+                    # place into team with size <5
+                    for j, u in enumerate(teams):
+                        if i == j: continue
+                        if len(u) < 5:
+                            u.append(member); placed = True; break
+                    if placed:
+                        changed = True
+                    else:
+                        # couldn't place; put back and stop
+                        t.insert(m_idx, member)
+                        break
+                if len(t) == 0:
+                    try:
+                        teams.remove(t)
+                    except ValueError:
+                        pass
+
+    # Now ensure New support: Mentor + Pro/HP in any team that contains a New
+    for i, t in enumerate(teams):
+        if any(is_new(x) for x in t):
+            if not any(is_mentor(x) for x in t):
+                # borrow a Mentor from a team that has >1 Mentors or can spare
+                for j, u in enumerate(teams):
+                    if i == j: continue
+                    if sum(1 for x in u if is_mentor(x)) > 1:
+                        idxm = next(k for k,x in enumerate(u) if is_mentor(x))
+                        t.append(u.pop(idxm)); break
+            if not any(is_pro_or_hp(x) for x in t):
+                for j, u in enumerate(teams):
+                    if i == j: continue
+                    if sum(1 for x in u if is_pro_or_hp(x)) > 1:
+                        idxs = next(k for k,x in enumerate(u) if is_pro_or_hp(x))
+                        t.append(u.pop(idxs)); break
     if not sang_sheet:
         await interaction.response.send_message("⚠️ Error: The Sanguine Sunday sheet is not connected.", ephemeral=True)
         return
@@ -1168,6 +1170,7 @@ async def sangmatch(interaction: discord.Interaction, voice_channel: Optional[di
     # --- Build teams here (existing logic assumed) then enforce rules ---
     try:
         rebalance(teams)
+        enforce_min_team_size_and_new_support(teams)
     except Exception as e:
         # If teams cannot be legally arranged, warn and abort
         warn = discord.Embed(title="❌ Team Generation Failed", description=f"Could not satisfy rules: {e}", color=discord.Color.red())
@@ -1499,6 +1502,7 @@ async def sangmatchtest(
 
     try:
         rebalance(teams)
+        enforce_min_team_size_and_new_support(teams)
     except Exception as e:
         warn = discord.Embed(title="❌ Team Generation Failed", description=f"Could not satisfy rules: {e}", color=discord.Color.red())
         await interaction.response.send_message(embed=warn, ephemeral=True)
@@ -1526,13 +1530,13 @@ async def sangmatchtest(
                 names.append(m.display_name if m else f"User {uid}")
             embed.add_field(name="Unassigned Users in VC", value=", ".join(names), inline=False)
 
-    global last_generated_teams
-    last_generated_teams = teams
     await post_channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
     await interaction.followup.send("✅ Posted no-ping test teams (no voice channels created).", ephemeral=True)
 
 
 
+
+from pathlib import Path
 
 @bot.tree.command(name="sangexport", description="Export the most recently generated teams to a text file.")
 @app_commands.checks.has_any_role("Administrators", "Clan Staff", "Senior Staff", "Staff", "Trial Staff")
@@ -1564,14 +1568,30 @@ async def sangexport(interaction: discord.Interaction):
             lines.append(f"  - {sname} — ID: {id_text}")
         lines.append("")
 
-    txt = "\n".join(lines)
-    outpath = "/mnt/data/sanguine_teams.txt"
+    txt = "
+".join(lines)
+
+    export_dir = Path(os.getenv("SANG_EXPORT_DIR", "/mnt/data"))
+    try:
+        export_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        export_dir = Path("/tmp")
+        export_dir.mkdir(parents=True, exist_ok=True)
+
+    ts = datetime.datetime.now(CST).strftime("%Y%m%d_%H%M%S")
+    outpath = export_dir / f"sanguine_teams_{ts}.txt"
     with open(outpath, "w", encoding="utf-8") as f:
         f.write(txt)
 
+    # send a short message preview and attach the file
+    preview = "
+".join(lines[:min(10, len(lines))])
     await interaction.followup.send(
-        content="📄 Exported teams:",
-        file=discord.File(outpath, filename="sanguine_teams.txt"),
+        content=f"📄 Exported teams to **{outpath.name}**:
+```
+{preview}
+```",
+        file=discord.File(str(outpath), filename=outpath.name),
         ephemeral=True
     )
 
@@ -1675,3 +1695,4 @@ async def on_ready():
 # 🔹 Run Bot
 # ---------------------------
 bot.run(os.getenv('DISCORD_BOT_TOKEN'))
+
