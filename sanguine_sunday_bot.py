@@ -12,6 +12,9 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta, timezone, time as dt_time
 from zoneinfo import ZoneInfo
 import gspread.exceptions
+
+# Timezone
+CST = ZoneInfo('America/Chicago')
 import math
 
 # ---------------------------
@@ -43,13 +46,15 @@ sheet_client = gspread.authorize(creds)
 # ---------------------------
 # 🔹 Sang Sheet Setup
 # ---------------------------
-SANG_SHEET_ID = "1CCpDAJO7Cq581yF_-rz3vx7L_BTettVaKglSvOmvTOE"
+SANG_SHEET_ID = "1CCpDAJO7Cq581yF_-rz3vx7L_BTettVaKglSvOmvTOE" # <-- Specific ID for Sang Signups
 SANG_SHEET_TAB_NAME = "SangSignups"
-SANG_HISTORY_TAB_NAME = "History"
+SANG_HISTORY_TAB_NAME = "History" # <-- ADDED
 
 try:
-    sang_google_sheet = sheet_client.open_by_key(SANG_SHEET_ID)
+    # Use the specific SANG_SHEET_ID and the main sheet_client
+    sang_google_sheet = sheet_client.open_by_key(SANG_SHEET_ID) # <-- Get the spreadsheet
     
+    # Try to get SangSignups sheet
     try:
         sang_sheet = sang_google_sheet.worksheet(SANG_SHEET_TAB_NAME)
     except gspread.exceptions.WorksheetNotFound:
@@ -57,6 +62,7 @@ try:
         sang_sheet = sang_google_sheet.add_worksheet(title=SANG_SHEET_TAB_NAME, rows="100", cols="20")
         sang_sheet.append_row(["Discord_ID", "Discord_Name", "Favorite Roles", "KC", "Has_Scythe", "Proficiency", "Learning Freeze", "Timestamp"])
 
+    # Try to get History sheet
     try:
         history_sheet = sang_google_sheet.worksheet(SANG_HISTORY_TAB_NAME)
     except gspread.exceptions.WorksheetNotFound:
@@ -87,6 +93,9 @@ intents.message_content = True # Needed for on_message
 intents.reactions = True # Needed for reaction tasks
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
+
+# Storage for export
+last_generated_teams = []
 
 # ---------------------------
 # 🔹 Main Configuration
@@ -569,11 +578,6 @@ def normalize_role(p: dict) -> str:
         return "proficient"
     return "highly proficient"
 
-def prof_rank(p: dict) -> int:
-    role = normalize_role(p)
-    order = {"mentor":0, "highly proficient":1, "proficient":2, "learner":3, "new":4}
-    return order.get(role, 5)
-
 PROF_ORDER = {"mentor": 0, "highly proficient": 1, "proficient": 2, "learner": 3, "new": 4}
 
 def prof_rank(p: dict) -> int:
@@ -581,6 +585,27 @@ def prof_rank(p: dict) -> int:
 
 def scythe_icon(p: dict) -> str:
     return "✅" if p.get("has_scythe") else "❌"
+
+def freeze_icon(p: dict) -> str:
+    return " 🧊" if str(p.get("learning_freeze", "")).lower() in ("true","1","yes") else ""
+
+def format_player_line(guild: discord.Guild, p: dict) -> str:
+    uid = int(p.get("user_id", 0)) if str(p.get("user_id","0")).isdigit() else None
+    if uid:
+        member = guild.get_member(uid)
+        mention = member.mention if member else f"<@{uid}>"
+    else:
+        # Fallback to Discord_ID field name if present
+        try:
+            uid2 = int(p.get("Discord_ID", 0))
+            member = guild.get_member(uid2)
+            mention = member.mention if member else f"<@{uid2}>"
+        except Exception:
+            mention = p.get("user_name", "Unknown")
+    role_text = p.get("proficiency", "Unknown").replace(" ", "-").capitalize().replace("-", " ")
+    kc_raw = p.get("kc", 0)
+    kc_text = f"({kc_raw} KC)" if isinstance(kc_raw, int) and kc_raw > 0 and role_text != "Mentor" else ""
+    return f"{mention} • **{role_text}** {kc_text} • {scythe_icon(p)} Scythe •{freeze_icon(p)}"
 
 async def find_latest_signup_message(channel: discord.TextChannel) -> Optional[discord.Message]:
     """Finds the most recent Sanguine Sunday signup message in a channel."""
@@ -1028,6 +1053,9 @@ async def sangmatch(interaction: discord.Interaction, voice_channel: Optional[di
         leftover_pool = leftover_pool[4:]
         teams.append(spill)
 
+    global last_generated_teams
+    last_generated_teams = teams
+
     # --- 4f) Post-process to enforce New-player constraints ---
     def is_new(p): 
         return p.get("proficiency") == "new"
@@ -1156,7 +1184,7 @@ async def sangmatch(interaction: discord.Interaction, voice_channel: Optional[di
     # Sort each team's display Mentor → HP → Pro → Learner → New
     for i, team in enumerate(teams, start=1):
         team_sorted = sorted(team, key=prof_rank)
-        lines = [user_line(p) for p in team_sorted]
+        lines = [format_player_line(guild, p) for p in team_sorted]
         embed.add_field(name=f"Team {i}", value="\n".join(lines) if lines else "—", inline=False)
 
     # If a VC was provided, show unassigned
@@ -1197,10 +1225,7 @@ async def sangexport(interaction: discord.Interaction):
     for i, team in enumerate(teams, start=1):
         lines.append(f"Team {i}")
         for p in team:
-            mention = f"<@{p.get('discord_id','?')}>"
-            role_text = normalize_role(p).title()
-            kc = int(p.get('kc', 0) or 0)
-            lines.append(f"  - {format_player_line(mention, role_text, kc, p)}")
+            lines.append(f"  - {format_player_line(interaction.guild, p)}")
         lines.append("")
     txt = "\n".join(lines)
     outpath = "/mnt/data/sanguine_teams.txt"
