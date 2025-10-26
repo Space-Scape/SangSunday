@@ -199,8 +199,8 @@ class UserSignupForm(Modal, title="Sanguine Sunday Signup"):
     )
     
     learning_freeze = TextInput(
-        label="Do you want to learn freeze roles?", # <-- Shortened this label
-        placeholder="Yes or leave blank",
+        label="Learn freeze role? (Yes or leave blank)", # <-- Shortened this label
+        placeholder="Yes or blank/No O͟N͟L͟Y͟",
         style=discord.TextStyle.short,
         max_length=3,
         required=False
@@ -235,11 +235,11 @@ class UserSignupForm(Modal, title="Sanguine Sunday Signup"):
         has_scythe_bool = scythe_value in ["yes", "y"]
 
         proficiency_value = ""
-        if kc_value <= 10:
+        if kc_value <= 1:
             proficiency_value = "New"
-        elif 10 < kc_value < 25:
+        elif 1 < kc_value < 50:
             proficiency_value = "Learner"
-        elif 25 <= kc_value < 50:
+        elif 50 <= kc_value < 150:
             proficiency_value = "Proficient"
         else:
             proficiency_value = "Highly Proficient"
@@ -744,8 +744,11 @@ def pop_complementary_learners(learners_list: list) -> (dict, dict):
 # --- Matchmaking Slash Command (REWORKED + Highly Proficient) ---
 @bot.tree.command(name="sangmatch", description="Create ToB teams from signups in a voice channel.")
 @app_commands.checks.has_role(STAFF_ROLE_ID)
-@app_commands.describe(voice_channel="Optional: The voice channel to pull users from. If omitted, uses all signups.")
-async def sangmatch(interaction: discord.Interaction, voice_channel: Optional[discord.VoiceChannel] = None):
+@app_commands.describe(voice_channel="Optional: The voice channel to pull users from. If omitted, uses all signups.",
+                      channel="(Optional) Override the text channel to post teams (testing).")
+async def sangmatch(interaction: discord.Interaction,
+                    voice_channel: Optional[discord.VoiceChannel] = None,
+                    channel: Optional[discord.TextChannel] = None):
     # --- SANG_POSTPROCESS_RULES: enforce hard constraints ---
     def role_of(p): return normalize_role(p)
     def is_new(p): return role_of(p) == "new"
@@ -1158,12 +1161,7 @@ async def sangmatch(interaction: discord.Interaction, voice_channel: Optional[di
                 pass  # non-fatal
 
     # Determine post channel (testing override allowed)
-    if 'channel' in locals() and isinstance(channel, discord.TextChannel):
-        post_channel = channel
-    else:
-        post_channel = guild.get_channel(SANG_POST_CHANNEL_ID)
-    if post_channel is None:
-        post_channel = interaction.channel
+    post_channel = channel or guild.get_channel(SANG_POST_CHANNEL_ID) or interaction.channel
 
     embed = discord.Embed(
         title=f"Sanguine Sunday Teams - {channel_name}",
