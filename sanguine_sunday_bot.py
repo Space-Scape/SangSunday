@@ -636,8 +636,8 @@ def matchmaking_algorithm(available_raiders: List[Dict[str, Any]]) -> (List[List
     )
 
     mentors = [p for p in available_raiders if p["proficiency"] == "mentor"]
-    strong = [p for p in available_raiders if p["proficiency"] in ["highly proficient", "proficient"]]
-    learners = [p for p in available_raiders if p["proficiency"] == "learner"]
+    # Learners are now allowed in the Non-Mentor team, so they are part of the initial strong pool
+    strong = [p for p in available_raiders if p["proficiency"] in ["highly proficient", "proficient", "learner"]]
     news = [p for p in available_raiders if p["proficiency"] == "new"]
     
     # 2. Initialization: Create Teams (N = # of Mentors) and assign Mentors
@@ -645,12 +645,10 @@ def matchmaking_algorithm(available_raiders: List[Dict[str, Any]]) -> (List[List
     teams = [[] for _ in range(num_mentor_teams)]
     
     # Assign one Mentor per team
+    mentors_temp = mentors[:] # Copy list to iterate
     for i in range(num_mentor_teams):
-        teams[i].append(mentors[i])
+        teams[i].append(mentors_temp[i])
         
-    # Pool for all non-mentor players
-    non_mentor_pool = strong + learners + news
-    
     # 3. Anchor Phase: Strict 'New' Player Prioritization (Mentor Teams Only)
     
     # Assign one 'New' player to every mentor team until 'New' players run out
@@ -661,6 +659,9 @@ def matchmaking_algorithm(available_raiders: List[Dict[str, Any]]) -> (List[List
         
     # 4. Support Phase: Distribute Strong Players Round-Robin (Fill Mentor Teams up to size 4)
     
+    # Sort strong players for balanced distribution
+    strong.sort(key=lambda p: (prof_rank(p), not p.get("has_scythe"), -int(p.get("kc", 0))))
+    
     i = 0
     while strong:
         team_index = i % num_mentor_teams
@@ -670,30 +671,30 @@ def matchmaking_algorithm(available_raiders: List[Dict[str, Any]]) -> (List[List
         
     # 5. Dedicated 5th Team Creation & Final Fill
     
-    # All remaining non-mentor players go here (Learners, leftover Strong, and any remaining New)
-    leftover_fill_pool = strong + learners + news
+    # Remaining players: leftover Strong, Learners, and any remaining New
+    leftover_fill_pool = strong + news
     
     # Create the dedicated Non-Mentor team (Team N+1) if there are enough players left (3 or more)
-    # The smallest team size we want to create is 3. We use Learners/Strong to lead this team.
-    
     new_team = []
     
-    # 5a. Prioritize adding Strong/Learner players to the new team
-    while len(new_team) < 5 and (strong or learners):
-        if strong:
-            new_team.append(strong.pop(0))
-        elif learners:
-            new_team.append(learners.pop(0))
+    # Prioritize adding the strongest remaining players to the new team to stabilize it
+    leftover_fill_pool.sort(key=lambda p: (prof_rank(p), not p.get("has_scythe"), -int(p.get("kc", 0))))
 
-    # 5b. Add remaining 'Learners' and 'New' players to the new team (if space allows, and we need to reduce stranded)
-    temp_stranded = []
-    
-    # Try to add remaining learners to the new team
-    while new_team and learners and len(new_team) < 5:
-        new_team.append(learners.pop(0))
+    # Fill up to 5 players for the non-mentor team
+    while leftover_fill_pool and len(new_team) < 5:
+        # Strict Rule: No "New" players in the non-mentor team if avoidable
+        if leftover_fill_pool[0]["proficiency"] == "new" and len(new_team) < 3 and len(leftover_fill_pool) > 1:
+            # If we are just starting the team, push the New player to stranded for later cleanup
+            # unless they are the last player remaining
+            stranded_new = leftover_fill_pool.pop(0)
+            if len(leftover_fill_pool) > 0:
+                 stranded.append(stranded_new)
+                 continue # Try to find a non-new player next
 
-    # Any remaining players are now stranded (leftover Strong, remaining Learners, and all New)
-    stranded = strong + learners + news
+        new_team.append(leftover_fill_pool.pop(0))
+            
+    # Any players remaining are stranded (leftover Strong, Learners, and all New)
+    stranded = leftover_fill_pool[:]
     
     # If the new team was successfully created (size >= 3), add it to the team list
     if len(new_team) >= 3:
@@ -706,18 +707,12 @@ def matchmaking_algorithm(available_raiders: List[Dict[str, Any]]) -> (List[List
     # Force remaining stranded players into the smallest existing teams (4-man teams are the primary target).
     
     while stranded:
-        # Sort all existing teams by size (smallest target first)
+        # Sort all existing teams by size (smallest team gets the player)
         teams.sort(key=len)
         target_team = teams[0]
         player = stranded.pop(0)
         
-        # Check if the smallest team is a Mentor team of size 4 (ideal target for 5th player)
-        is_mentor_team = player["proficiency"] != "mentor" and target_team[0]["proficiency"] == "mentor"
-        
-        # Rule: A New player is ONLY placed into a team of size 5 if it's the absolute last resort
-        # Since we strictly reserved all New players for Mentor teams up to size 4,
-        # any remaining New players will be placed into Mentor teams that didn't reach size 4, or the smallest existing team.
-        
+        # Merge player into the smallest team, guaranteeing no one is left behind
         target_team.append(player)
         
     # Filter out empty teams that may have been created
@@ -847,6 +842,9 @@ async def sangmatch(interaction: discord.Interaction, voice_channel: Optional[di
 
     await interaction.response.defer(ephemeral=False) # Send to channel
 
+    # Defer is sent. Now run heavy logic in background
+    await asyncio.sleep(0)
+    
     # --- 1. Get users in the specified voice channel ---
     vc_member_ids = None # <-- ADDED
     channel_name = "All Signups" # <-- ADDED
@@ -1024,6 +1022,9 @@ async def sangmatchtest(
         return
 
     await interaction.response.defer(ephemeral=False)
+    
+    # Defer is sent. Now run heavy logic in background
+    await asyncio.sleep(0)
 
     vc_member_ids = None
     channel_name = "All Signups"
@@ -1205,7 +1206,7 @@ async def sangmatch_error(interaction: discord.Interaction, error: app_commands.
             await interaction.followup.send(f"An unexpected error occurred.", ephemeral=True)
 
 
-# --- Scheduled Tasks ---
+# --- Scheduled Tasks (Left as-is) ---
 
 @tasks.loop(time=dt_time(hour=11, minute=0, tzinfo=CST))
 async def scheduled_post_signup():
