@@ -145,6 +145,7 @@ No matter if you're a learner or an experienced raider, we strongly encourage yo
 Click a button below to sign up for the event.
 - **Raider:** Fill out the form with your KC and gear.
 - **Mentor:** Fill out the form to sign up as a mentor.
+- **Withdraw:** Remove your name from this week's signup list.
 
 The form will remember your answers from past events! 
 You only need to edit Kc's and Roles.
@@ -465,9 +466,41 @@ def get_previous_signup(user_id: str) -> Optional[Dict[str, Any]]:
         print(f"🔥 GSpread error fetching previous signup for {user_id}: {e}")
         return None
 
+# --- New Withdrawal Button ---
+class WithdrawalButton(ui.Button):
+    def __init__(self):
+        super().__init__(label="Withdraw", style=ButtonStyle.secondary, custom_id="sang_withdraw", emoji="❌")
+
+    async def callback(self, interaction: discord.Interaction):
+        user_id = str(interaction.user.id)
+        user_name = interaction.user.display_name
+
+        if not sang_sheet:
+            await interaction.response.send_message("⚠️ Error: The Sanguine Signup sheet is not connected.", ephemeral=True)
+            return
+
+        try:
+            cell = sang_sheet.find(user_id, in_column=1)
+            
+            if cell is None:
+                await interaction.response.send_message(f"ℹ️ {user_name}, you are not currently signed up for this week's event.", ephemeral=True)
+                return
+
+            # Delete the row from SangSignups sheet (but leave History alone)
+            sang_sheet.delete_rows(cell.row)
+            
+            await interaction.response.send_message(f"✅ **{user_name}**, you have been successfully withdrawn from this week's Sanguine Sunday signups.", ephemeral=True)
+            print(f"✅ User {user_id} ({user_name}) withdrew from SangSignups.")
+
+        except Exception as e:
+            print(f"🔥 GSpread error on withdrawal: {e}")
+            await interaction.response.send_message("⚠️ An error occurred while processing your withdrawal.", ephemeral=True)
+
+
 class SignupView(View):
     def __init__(self):
         super().__init__(timeout=None)
+        self.add_item(WithdrawalButton()) # Add the withdrawal button
 
     @ui.button(label="Sign Up as Raider", style=ButtonStyle.success, custom_id="sang_signup_raider", emoji="📝")
     async def user_signup_button(self, interaction: discord.Interaction, button: Button):
@@ -733,24 +766,17 @@ def matchmaking_algorithm(available_raiders: List[Dict[str, Any]]) -> List[List[
     
     # 2. Team Initialization: Create one team per Mentor.
     if not mentors:
-        # If no mentors, we cannot form supported teams, so we just return the best teams we can make
-        # For now, if no mentors, the output will likely be messy based on the requirements, so we return empty.
-        # This forces the staff to ensure mentors sign up first.
-        return [] 
+        return [], [] # No teams, no stranded players (since no teams were formed)
         
     num_teams = len(mentors)
     teams = [[] for _ in range(num_teams)]
     
-    # Track the remaining players for final cleanup
-    remaining_players = []
-
-    # 3. Anchor Assignment: Mentor + Support (New/Learner)
+    # 3. Anchor Assignment: Mentor + New/Learner + HP/Pro Support
     
     # 3a. Assign Mentors (Pass 1)
-    for i, mtr in enumerate(mentors):
-        teams[i].append(mentors.pop(0)) # Pop from the list to update `mentors` list implicitly
+    teams = [[mentors.pop(0)] for _ in range(num_teams)] 
 
-    # 3b. Assign New players (Pass 2)
+    # 3b. Assign New players (Pass 2) - Prioritize placing 1 New player per team
     for i in range(num_teams):
         if news:
             teams[i].append(news.pop(0))
@@ -758,99 +784,105 @@ def matchmaking_algorithm(available_raiders: List[Dict[str, Any]]) -> List[List[
              # If no new, give the team a learner instead
             teams[i].append(learners.pop(0))
 
-    # 3c. Assign 1 Pro/HP to every Mentor team (Pass 3)
-    # This ensures Mentor is NEVER alone and Mentor/New teams get a second experienced player.
+    # 3c. Assign 1 Pro/HP to every Mentor team (Pass 3) - Provide support layer
+    # Distribute strongest first to teams with the lowest total KC/rank if possible
+    # We'll stick to a simple round-robin for strong distribution to ensure balance
     for i in range(num_teams):
         if strong_pool:
             teams[i].append(strong_pool.pop(0))
     
-    # 4. Fill remaining spots (size 4, size 5) with leftovers
+    # 4. Fill remaining spots with leftovers (HP/Pro, Learners, New)
     
-    # Consolidate all remaining pools
+    # Consolidated pool of remaining players, prioritized for filling.
     leftovers = strong_pool + learners + news
     
-    # Distribute the remaining players round-robin until teams are full (up to size 4 first)
+    # Distribute remaining players round-robin, prioritizing teams up to size 5
+    # The order of the leftovers list provides natural prioritization (HP/Pro > Learner > New)
     i = 0
     while leftovers:
         player = leftovers.pop(0)
         
-        # Try to place in a team under size 4 first
-        target_team = teams[i % num_teams]
-        
-        if len(target_team) < 4:
-            target_team.append(player)
-        elif len(target_team) < 5:
-            # Check for New rule before making a 5-man team
-            if normalize_role(player) == 'new' and len(target_team) == 4:
-                # Cannot make a 5-man team with a new player; put player back and break loop for now.
-                # This player will become a true leftover.
-                leftovers.insert(0, player) 
+        # Find the smallest team that is under size 5
+        target_indices = sorted(range(num_teams), key=lambda idx: len(teams[idx]))
+        placed = False
+
+        for target_idx in target_indices:
+            target_team = teams[target_idx]
+            if len(target_team) < 5:
+                
+                # Check 1: No New in 5-man team (Must be size 4 or less)
+                is_new_player = normalize_role(player) == 'new'
+                if is_new_player and len(target_team) == 4:
+                    continue # Skip this team, cannot make size 5 with a New player
+                
+                # Check 2: No two Freeze Learners together
+                freeze_conflict = player.get('learning_freeze') and any(p.get('learning_freeze') for p in target_team)
+                if freeze_conflict:
+                    continue
+                
+                # Place player
+                target_team.append(player)
+                placed = True
                 break
-            
-            # Check for Freeze rule before adding to a team
-            freeze_conflict = player.get('learning_freeze') and any(p.get('learning_freeze') for p in target_team)
-            if freeze_conflict:
-                 leftovers.insert(0, player)
-                 break
-                 
-            target_team.append(player)
-        else:
-            # Team is already size 5, player remains a true leftover
-            leftovers.insert(0, player)
-            break
-            
-        i += 1
         
+        if not placed:
+            # If player couldn't be placed (all teams size 5, or conflicts), put them back
+            leftovers.insert(0, player)
+            break 
+            
     # 5. Final Cleanup and Stranded Logic
     
-    # Any players still left in `leftovers` need special handling
+    # Remaining players are the final leftovers (stranded)
+    stranded = leftovers 
     
-    # Try to form a single last team of 3 or 4 from leftovers
-    if len(leftovers) >= 3 and len(leftovers) <= 4:
+    # Try to form a single last team of 3 or 4 from leftovers if there's enough skill
+    if len(stranded) >= 3 and len(stranded) <= 4:
         # Check 3-man team rule (no New or Learner w/out Scythe)
-        if len(leftovers) == 3:
-            has_new = any(normalize_role(p) == 'new' for p in leftovers)
-            has_unsupported_learner = any(normalize_role(p) == 'learner' and not p.get('has_scythe') for p in leftovers)
+        if len(stranded) == 3:
+            has_new = any(normalize_role(p) == 'new' for p in stranded)
+            has_unsupported_learner = any(normalize_role(p) == 'learner' and not p.get('has_scythe') for p in stranded)
             
             if not has_new and not has_unsupported_learner:
-                teams.append(leftovers)
-                leftovers = []
-    
-    # If leftovers still remain, they are stranded
-    if leftovers:
-        # For display purposes, append the remaining single/doubleton team(s)
-        # to the end, even if they violate the size 3 minimum.
-        teams.append(leftovers) 
+                teams.append(stranded)
+                stranded = []
+        # If 4 leftovers, just form a team (assuming it has Mentor/HP support from previous passes)
+        elif len(stranded) == 4:
+             teams.append(stranded)
+             stranded = []
 
-    # 6. Final Validation Pass (Removes teams that violate hard rules if they were formed during cleanup)
+    # 6. Final Validation Pass (Filter teams that violate hard rules)
     final_teams = []
     
     for team in teams:
         team_size = len(team)
         
-        # Rule Check: Teams of size 1 or 2 are not considered valid teams
+        # Must be size 3 or more to be a valid raiding team
         if team_size < 3:
+            # Add small teams to stranded pool for reporting
+            stranded.extend(team)
             continue 
 
-        # Rule Check 1: No New in 3s or 5s. (Teams are primarily 4/5 now, but check 3/5)
+        # Rule Check 1: No New in 3s or 5s.
         has_new = any(normalize_role(p) == 'new' for p in team)
         if has_new and team_size in (3, 5):
-            # If this happened during cleanup, we must discard the team.
+            stranded.extend(team)
             continue
 
         # Rule Check 2: No Learner in 3s without Scythe
         has_unsupported_learner = any(normalize_role(p) == 'learner' and not p.get('has_scythe') for p in team)
         if has_unsupported_learner and team_size == 3:
+            stranded.extend(team)
             continue
             
         # Rule Check 3: No two Freeze Learners together.
         freeze_count = sum(1 for p in team if p.get('learning_freeze'))
         if freeze_count > 1:
+            stranded.extend(team)
             continue
             
         final_teams.append(team)
         
-    return final_teams
+    return final_teams, stranded
 
 # --- Matchmaking Slash Command (REWORKED + Highly Proficient) ---
 @bot.tree.command(name="sangmatch", description="Create ToB teams from signups in a voice channel.")
@@ -935,7 +967,7 @@ async def sangmatch(interaction: discord.Interaction, voice_channel: Optional[di
         return
 
     # --- 4. RUN MATCHMAKING ALGORITHM ---
-    teams = matchmaking_algorithm(available_raiders)
+    teams, stranded_players = matchmaking_algorithm(available_raiders)
     
     # --- 5. Format and send output ---
     guild = interaction.guild
@@ -988,30 +1020,28 @@ async def sangmatch(interaction: discord.Interaction, voice_channel: Optional[di
         embed.add_field(name=f"Team {i} (Size: {len(team)})", value="\n".join(team_details) if team_details else "—", inline=False)
 
     # If a VC was provided, show unassigned
-    unassigned_users = set()
+    unassigned_users_in_vc = set()
     if vc_member_ids:
         assigned_ids = {p["user_id"] for t in teams for p in t}
-        unassigned_users = vc_member_ids - assigned_ids
+        unassigned_users_in_vc = vc_member_ids - assigned_ids
     
     # Check for players who signed up but were left over (not in a final_teams list)
-    all_assigned_ids = {p["user_id"] for t in teams for p in t}
-    all_signed_up_ids = {p["user_id"] for p in available_raiders}
-    leftover_signups = all_signed_up_ids - all_assigned_ids
     
-    if unassigned_users or leftover_signups:
+    if unassigned_users_in_vc or stranded_players:
         mentions = []
         # Add users who were in VC but not signed up
-        for uid in unassigned_users:
+        for uid in unassigned_users_in_vc:
             m = guild.get_member(int(uid))
             mentions.append(f"{m.mention} (VC/No Signup)" if m else f"<@{uid}> (VC/No Signup)")
 
         # Add users who signed up but weren't placed in a valid team
-        for uid in leftover_signups:
-            m = guild.get_member(int(uid))
-            mentions.append(f"{m.mention} (Leftover)" if m else f"<@{uid}> (Leftover)")
+        for p in stranded_players:
+            uid = int(p["user_id"])
+            m = guild.get_member(uid)
+            mentions.append(f"{m.mention} (Stranded)" if m else f"<@{uid}> (Stranded)")
             
         embed.add_field(
-            name="Unassigned/Leftover Users",
+            name="Unassigned/Stranded Users",
             value="\n".join(mentions),
             inline=False
         )
@@ -1119,7 +1149,7 @@ async def sangmatchtest(
         return
 
     # --- RUN MATCHMAKING ALGORITHM ---
-    teams = matchmaking_algorithm(available_raiders)
+    teams, stranded_players = matchmaking_algorithm(available_raiders)
     
     # --- Format Output ---
     guild = interaction.guild
@@ -1139,12 +1169,22 @@ async def sangmatchtest(
     if vc_member_ids:
         assigned_ids = {p["user_id"] for t in teams for p in t}
         unassigned_ids = [uid for uid in vc_member_ids or [] if uid not in assigned_ids]
-        if unassigned_ids:
+        if unassigned_ids or stranded_players:
             names = []
+            # Add users who were in VC but not signed up
             for uid in unassigned_ids:
                 m = guild.get_member(int(uid))
-                names.append(m.display_name if m else f"User {uid}")
-            embed.add_field(name="Unassigned Users in VC", value=", ".join(names), inline=False)
+                names.append(f"{m.display_name} (VC/No Signup)" if m else f"User {uid} (VC/No Signup)")
+
+            # Add users who signed up but weren't placed in a valid team
+            for p in stranded_players:
+                names.append(f"{p['user_name']} (Stranded)")
+            
+            embed.add_field(
+                name="Unassigned/Stranded Users",
+                value="\n".join(names),
+                inline=False
+            )
 
     # Store teams globally for /sangexport
     global last_generated_teams
