@@ -552,6 +552,58 @@ class SignupView(View):
 
 # --- Helper Functions ---
 
+# --- Name sanitization + ID resolution helpers ---
+
+SAFE_NAME_CHARS = r"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 -_."
+
+def _strip_paren_and_slash(s: str) -> str:
+    if not s:
+        return ""
+    # remove anything in parentheses (…) or brackets […] (non-greedy)
+    s = re.sub(r"\(.*?\)|\[.*?\]", "", s)
+    # remove anything after a literal slash '/'
+    s = s.split("/", 1)[0]
+    return s
+
+def sanitize_nickname(name: str) -> str:
+    """
+    Spreadsheet-safe nickname:
+      - drop (...) and [...] segments
+      - drop anything after '/'
+      - remove special chars !@#$%^&*()/?><'";:[]{}\|=+-
+      - collapse spaces, trim
+    """
+    s = _strip_paren_and_slash(name or "")
+    # remove forbidden/special characters
+    s = re.sub(r"[!@#$%^&*()/?><'\";:\[\]{}\|=+\-]", "", s)
+    # keep only a conservative allowed set; replace others with space
+    s = "".join(ch if ch in SAFE_NAME_CHARS else " " for ch in s)
+    # collapse whitespace
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+def find_member_id_by_sanitized_nickname(guild: discord.Guild, sanitized: str) -> Optional[int]:
+    """
+    Try to find a member by comparing the sanitized spreadsheet nickname
+    against sanitized Guild display names.
+    """
+    if not guild or not sanitized:
+        return None
+    target = sanitize_nickname(sanitized).lower()
+    # exact sanitized match first
+    for m in guild.members:
+        if sanitize_nickname(m.display_name).lower() == target:
+            return m.id
+    # fallback: try username too
+    for m in guild.members:
+        if sanitize_nickname(str(m)).lower() == target:
+            return m.id
+    return None
+
+def freeze_icon(p: dict) -> str:
+    return " 🧊" if str(p.get("learning_freeze", "")).lower() in ("true", "1", "yes") else ""
+
+
 # --- Sanguine Sunday VC/Channel Config ---
 SANG_VC_CATEGORY_ID = 1376645103803830322  # Category for auto-created team voice channels
 SANG_POST_CHANNEL_ID = 1338295765759688767  # Default text channel to post teams
@@ -1474,6 +1526,8 @@ async def sangmatchtest(
                 names.append(m.display_name if m else f"User {uid}")
             embed.add_field(name="Unassigned Users in VC", value=", ".join(names), inline=False)
 
+    global last_generated_teams
+    last_generated_teams = teams
     await post_channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
     await interaction.followup.send("✅ Posted no-ping test teams (no voice channels created).", ephemeral=True)
 
@@ -1621,4 +1675,3 @@ async def on_ready():
 # 🔹 Run Bot
 # ---------------------------
 bot.run(os.getenv('DISCORD_BOT_TOKEN'))
-
