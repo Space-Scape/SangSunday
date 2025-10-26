@@ -1571,8 +1571,7 @@ async def sangexport(interaction: discord.Interaction):
             lines.append(f"  - {sname} — ID: {id_text}")
         lines.append("")
 
-    txt = "
-".join(lines)
+    txt = "".join(lines)
 
     export_dir = Path(os.getenv("SANG_EXPORT_DIR", "/mnt/data"))
     try:
