@@ -199,8 +199,8 @@ class UserSignupForm(Modal, title="Sanguine Sunday Signup"):
     )
     
     learning_freeze = TextInput(
-        label="Learn freeze role? (Yes or leave blank)", # <-- Shortened this label
-        placeholder="Yes or blank/No O͟N͟L͟Y͟",
+        label="Do you want to learn freeze roles?", # <-- Shortened this label
+        placeholder="Yes or leave blank",
         style=discord.TextStyle.short,
         max_length=3,
         required=False
@@ -235,11 +235,11 @@ class UserSignupForm(Modal, title="Sanguine Sunday Signup"):
         has_scythe_bool = scythe_value in ["yes", "y"]
 
         proficiency_value = ""
-        if kc_value <= 1:
+        if kc_value <= 10:
             proficiency_value = "New"
-        elif 1 < kc_value < 50:
+        elif 10 < kc_value < 25:
             proficiency_value = "Learner"
-        elif 50 <= kc_value < 150:
+        elif 25 <= kc_value < 50:
             proficiency_value = "Proficient"
         else:
             proficiency_value = "Highly Proficient"
