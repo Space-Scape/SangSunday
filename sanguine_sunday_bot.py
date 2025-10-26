@@ -933,7 +933,7 @@ def matchmaking_algorithm(available_raiders: List[Dict[str, Any]]):
                 leftovers.append(leftovers.pop(0))
 
     return teams, []  # no stranded list
-        return [], available_raiders
+    return [], available_raiders
         
     num_teams = len(mentors)
     teams = [[] for _ in range(num_teams)]
