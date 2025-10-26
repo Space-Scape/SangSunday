@@ -202,6 +202,14 @@ class UserSignupForm(Modal, title="Sanguine Sunday Signup"):
         required=True
     )
 
+    mentor_request = TextInput(
+        label="Would you like to be assigned a mentor? (Yes/No)",
+        placeholder="Yes or No",
+        style=discord.TextStyle.short,
+        max_length=3,
+        required=False
+    )
+
     has_scythe = TextInput(
         label="Do you have a Scythe? (Yes/No)",
         placeholder="Yes or No O͟N͟L͟Y͟", 
@@ -211,7 +219,7 @@ class UserSignupForm(Modal, title="Sanguine Sunday Signup"):
     )
     
     learning_freeze = TextInput(
-        label="Learn freeze role? (Yes or leave blank)", # <-- Shortened this label
+        label="Do you want to learn freeze roles? (Yes or leave blank)",
         placeholder="Yes or blank/No O͟N͟L͟Y͟",
         style=discord.TextStyle.short,
         max_length=3,
@@ -224,8 +232,11 @@ class UserSignupForm(Modal, title="Sanguine Sunday Signup"):
             self.roles_known.default = previous_data.get("Favorite Roles", "")
             kc_val = previous_data.get("KC", "")
             self.kc.default = str(kc_val) if kc_val not in ["", None, "X"] else ""
-            self.has_scythe.default = "Yes" if previous_data.get("Has_Scythe", False) else "No"
-            self.learning_freeze.default = "Yes" if previous_data.get("Learning Freeze", False) else ""
+            self.has_scythe.default = "Yes" if str(previous_data.get("Has_Scythe", "FALSE")).upper() == "TRUE" else "No"
+            self.learning_freeze.default = "Yes" if str(previous_data.get("Learning Freeze", "FALSE")).upper() == "TRUE" else ""
+            # Prefill mentor request (treat truthy as "Yes")
+            mr = str(previous_data.get("Mentor_Request", "")).strip().lower()
+            self.mentor_request.default = "Yes" if mr in ["true", "yes", "y"] else ""
 
     async def on_submit(self, interaction: discord.Interaction):
         if not sang_sheet:
@@ -246,8 +257,14 @@ class UserSignupForm(Modal, title="Sanguine Sunday Signup"):
             return
         has_scythe_bool = scythe_value in ["yes", "y"]
 
+        # Mentor request: allow blank (treated as No)
+        mentor_value = str(self.mentor_request).strip().lower()
+        if mentor_value not in ["", "yes", "no", "y", "n"]:
+            await interaction.response.send_message("⚠️ Error: Mentor request must be 'Yes' or 'No' (or leave blank).", ephemeral=True)
+            return
+        mentor_bool = mentor_value in ["yes", "y"]
+
         # --- Re-aligning KC based on new ranges ---
-        proficiency_value = ""
         if kc_value <= 10:
             proficiency_value = "New"
         elif 11 <= kc_value <= 25:
@@ -265,50 +282,45 @@ class UserSignupForm(Modal, title="Sanguine Sunday Signup"):
         user_name = sanitize_nickname(interaction.user.display_name)
         timestamp = datetime.now(CST).strftime("%Y-%m-%d %H:%M:%S")
         
+        # NOTE: Matches SANG_SHEET_HEADER order (Mentor_Request before Timestamp)
         row_data = [
             user_id, user_name, roles_known_value, kc_value, 
-            has_scythe_bool, proficiency_value, learning_freeze_bool, timestamp
+            has_scythe_bool, proficiency_value, learning_freeze_bool, mentor_bool, timestamp
         ]
         
         try:
             cell = sang_sheet.find(user_id, in_column=1)
 
-            # --- UPDATED CHECK ---
             if cell is None:
                 sang_sheet.append_row(row_data)
             else:
-                sang_sheet.update(values=[row_data], range_name=f'A{cell.row}:H{cell.row}') # <-- FIXED
+                sang_sheet.update(values=[row_data], range_name=f'A{cell.row}:I{cell.row}')  # extended to I
 
-            # --- MODIFIED HISTORY WRITE ---
             if history_sheet:
                 try:
                     history_cell = history_sheet.find(user_id, in_column=1)
                     if history_cell is None:
                         history_sheet.append_row(row_data)
                     else:
-                        history_sheet.update(values=[row_data], range_name=f'A{history_cell.row}:H{history_cell.row}') # <-- FIXED
+                        history_sheet.update(values=[row_data], range_name=f'A{history_cell.row}:I{history_cell.row}')  # extended to I
                 except Exception as e:
                     print(f"🔥 GSpread error on HISTORY (User Form) write: {e}")
             else:
                 print("🔥 History sheet not available, skipping history append.")
-            # --- END MODIFIED ---
 
         except gspread.CellNotFound:
-             sang_sheet.append_row(row_data)
-
-             # --- MODIFIED HISTORY WRITE ---
-             if history_sheet:
+            sang_sheet.append_row(row_data)
+            if history_sheet:
                 try:
                     history_cell = history_sheet.find(user_id, in_column=1)
                     if history_cell is None:
                         history_sheet.append_row(row_data)
                     else:
-                        history_sheet.update(values=[row_data], range_name=f'A{history_cell.row}:H{history_cell.row}') # <-- FIXED
+                        history_sheet.update(values=[row_data], range_name=f'A{history_cell.row}:I{history_cell.row}')  # extended to I
                 except Exception as e:
                     print(f"🔥 GSpread error on HISTORY (User Form) write: {e}")
-             else:
-                 print("🔥 History sheet not available, skipping history append.")
-             # --- END MODIFIED ---
+            else:
+                print("🔥 History sheet not available, skipping history append.")
 
         except Exception as e:
             print(f"🔥 GSpread error on signup: {e}")
@@ -321,7 +333,8 @@ class UserSignupForm(Modal, title="Sanguine Sunday Signup"):
             f"**KC:** {kc_value}\n"
             f"**Scythe:** {'Yes' if has_scythe_bool else 'No'}\n"
             f"**Favorite Roles:** {roles_known_value}\n"
-            f"**Learn Freeze:** {'Yes' if learning_freeze_bool else 'No'}",
+            f"**Learn Freeze:** {'Yes' if learning_freeze_bool else 'No'}\n"
+            f"**Mentor Assigned:** {'Yes' if mentor_bool else 'No'}",
             ephemeral=True
         )
 
