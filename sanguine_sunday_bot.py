@@ -13,6 +13,8 @@ from datetime import datetime, timedelta, timezone, time as dt_time
 from zoneinfo import ZoneInfo
 import gspread.exceptions
 import math
+from zoneinfo import ZoneInfo
+CST = ZoneInfo('America/Chicago')
 
 # ---------------------------
 # 🔹 Google Sheets Setup
