@@ -624,13 +624,13 @@ class SignupView(View):
 
 def matchmaking_algorithm(available_raiders: List[Dict[str, Any]]) -> (List[List[Dict[str, Any]]], List[Dict[str, Any]]):
     """
-    Reworked algorithm prioritizing Mentor-led teams of 4, with a final merge
-    phase to ensure 'No Man Left Behind'.
+    Reworked algorithm prioritizing Mentor-led teams of 4, with Learners stabilizing
+    the Non-Mentor team, and a final 'No Man Left Behind' merge.
     """
     if not available_raiders:
         return [], []
 
-    # 1. Global Sort and Pool Creation (Mentor -> HP -> Pro -> Learner -> New)
+    # 1. Global Sort and Pool Creation
     available_raiders.sort(
         key=lambda p: (prof_rank(p), not p.get("has_scythe"), -int(p.get("kc", 0)))
     )
@@ -647,83 +647,82 @@ def matchmaking_algorithm(available_raiders: List[Dict[str, Any]]) -> (List[List
     # Assign one Mentor per team
     for i in range(num_mentor_teams):
         teams[i].append(mentors[i])
+        
+    # Pool for all non-mentor players
+    non_mentor_pool = strong + learners + news
     
-    # All other players go into the general pool
-    remaining_pool = strong + learners + news
+    # 3. Anchor Phase: Strict 'New' Player Prioritization (Mentor Teams Only)
     
-    # 3. Anchor & Support Phase (Fill Mentor Teams up to size 4)
-    
-    # 3a. Anchor (New/Learner) Assignment
+    # Assign one 'New' player to every mentor team until 'New' players run out
     i = 0
     while news and i < num_mentor_teams:
         teams[i].append(news.pop(0))
         i += 1
-    
-    # Fill remaining teams with Learners if no New are left
-    while learners and i < num_mentor_teams:
-        teams[i].append(learners.pop(0))
-        i += 1
         
-    # 3b. Strong Player Assignment (HP/Pro) - Spread support evenly
+    # 4. Support Phase: Distribute Strong Players Round-Robin (Fill Mentor Teams up to size 4)
+    
     i = 0
     while strong:
         team_index = i % num_mentor_teams
         if len(teams[team_index]) < 4:
             teams[team_index].append(strong.pop(0))
         i += 1
-
-    # 4. Fill Mentor Teams up to size 4 (Using leftovers)
-    # The pool is now: strong (leftovers), learners, news
-    leftover_pool = strong + learners + news
-    
-    i = 0
-    while leftover_pool and i < num_mentor_teams:
-        team_index = i
-        if len(teams[team_index]) < 4:
-            teams[team_index].append(leftover_pool.pop(0))
-            i = 0 # Restart inner loop to try filling other small teams
-            continue
-        i += 1
         
-    # 5. Stranded Cleanup Phase (No Man Left Behind)
-    stranded = leftover_pool
+    # 5. Dedicated 5th Team Creation & Final Fill
     
-    # 5a. Create the dedicated non-Mentor team (Team N+1) if more than 3 stranded HP/Pro/Learners are left
-    non_mentor_pool = [p for p in stranded if p["proficiency"] != "new"] # Only Pro/HP/Learners can lead a non-Mentor team
-    stranded_new = [p for p in stranded if p["proficiency"] == "new"]
+    # All remaining non-mentor players go here (Learners, leftover Strong, and any remaining New)
+    leftover_fill_pool = strong + learners + news
+    
+    # Create the dedicated Non-Mentor team (Team N+1) if there are enough players left (3 or more)
+    # The smallest team size we want to create is 3. We use Learners/Strong to lead this team.
+    
+    new_team = []
+    
+    # 5a. Prioritize adding Strong/Learner players to the new team
+    while len(new_team) < 5 and (strong or learners):
+        if strong:
+            new_team.append(strong.pop(0))
+        elif learners:
+            new_team.append(learners.pop(0))
 
-    if len(non_mentor_pool) >= 3:
-        # Create a non-Mentor team of 4/5
-        new_team = non_mentor_pool[:5]
+    # 5b. Add remaining 'Learners' and 'New' players to the new team (if space allows, and we need to reduce stranded)
+    temp_stranded = []
+    
+    # Try to add remaining learners to the new team
+    while new_team and learners and len(new_team) < 5:
+        new_team.append(learners.pop(0))
+
+    # Any remaining players are now stranded (leftover Strong, remaining Learners, and all New)
+    stranded = strong + learners + news
+    
+    # If the new team was successfully created (size >= 3), add it to the team list
+    if len(new_team) >= 3:
         teams.append(new_team)
-        stranded = non_mentor_pool[5:] + stranded_new
-    else:
-        # All non-New are stranded + all New are stranded
-        stranded = non_mentor_pool + stranded_new
-
-
-    # 5b. Final Placement (Guaranteed, No Man Left Behind)
-    # Force remaining stranded players into the smallest existing teams.
+    elif new_team:
+        # If less than 3, move them to the stranded pool for final cleanup
+        stranded = new_team + stranded
+        
+    # 6. Final Placement (Guaranteed, No Man Left Behind)
+    # Force remaining stranded players into the smallest existing teams (4-man teams are the primary target).
+    
     while stranded:
-        # Sort teams by size ascending
+        # Sort all existing teams by size (smallest target first)
         teams.sort(key=len)
         target_team = teams[0]
         player = stranded.pop(0)
         
-        # Check against the only non-negotiable hard constraint (3-man teams):
-        if len(target_team) == 2 and player["proficiency"] == "learner" and not player["has_scythe"]:
-            # If the smallest team is size 2, and the player is an unsupported learner,
-            # try to put them in the second smallest team instead.
-            if len(teams) > 1 and len(teams[1]) < 5:
-                target_team = teams[1]
-            # If still only the 2-man team, place them anyway (Rule: No Man Left Behind)
+        # Check if the smallest team is a Mentor team of size 4 (ideal target for 5th player)
+        is_mentor_team = player["proficiency"] != "mentor" and target_team[0]["proficiency"] == "mentor"
+        
+        # Rule: A New player is ONLY placed into a team of size 5 if it's the absolute last resort
+        # Since we strictly reserved all New players for Mentor teams up to size 4,
+        # any remaining New players will be placed into Mentor teams that didn't reach size 4, or the smallest existing team.
         
         target_team.append(player)
-
+        
     # Filter out empty teams that may have been created
     teams = [t for t in teams if t]
     
-    # The list of stranded users is now truly empty (by rule)
     return teams, []
 
 
