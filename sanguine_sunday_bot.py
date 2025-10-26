@@ -1588,8 +1588,7 @@ async def sangexport(interaction: discord.Interaction):
     with open(outpath, "w", encoding="utf-8") as f:
         f.write(txt)
 
-    preview = "
-".join(lines[:min(12, len(lines))])
+    preview = "".join(lines[:min(12, len(lines))])
     await interaction.followup.send(
         content=f"📄 Exported teams to **{outpath.name}**:
 ```
@@ -1620,8 +1619,7 @@ return
             lines.append(f"  - {sname} — ID: {id_text}")
         lines.append("")
 
-    txt = "
-".join(lines)
+    txt = "".join(lines)
 
     export_dir = Path(os.getenv("SANG_EXPORT_DIR", "/mnt/data"))
     try:
