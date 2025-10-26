@@ -1149,16 +1149,16 @@ async def sangmatch(interaction: discord.Interaction,
         return
 
     # --- Create voice channels under SanguineSunday – Team X pattern ---
-    guild = interaction.guild
-    category = guild.get_channel(SANG_VC_CATEGORY_ID)
-    created_voice_channel_ids = []
-    if category and hasattr(category, "create_voice_channel"):
-        for i in range(len(teams)):
-            try:
-                vc = await category.create_voice_channel(name=f"SanguineSunday – Team {i+1}")
-                created_voice_channel_ids.append(vc.id)
-            except Exception:
-                pass  # non-fatal
+#   guild = interaction.guild
+#   category = guild.get_channel(SANG_VC_CATEGORY_ID)
+#   created_voice_channel_ids = []
+#   if category and hasattr(category, "create_voice_channel"):
+#       for i in range(len(teams)):
+#           try:
+#               vc = await category.create_voice_channel(name=f"SanguineSunday – Team {i+1}")
+#               created_voice_channel_ids.append(vc.id)
+#            except Exception:
+#                pass  # non-fatal
 
     # Determine post channel (testing override allowed)
     post_channel = channel or guild.get_channel(SANG_POST_CHANNEL_ID) or interaction.channel
