@@ -12,9 +12,6 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta, timezone, time as dt_time
 from zoneinfo import ZoneInfo
 import gspread.exceptions
-
-# Timezone
-CST = ZoneInfo('America/Chicago')
 import math
 
 # ---------------------------
@@ -93,9 +90,6 @@ intents.message_content = True # Needed for on_message
 intents.reactions = True # Needed for reaction tasks
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
-
-# Storage for export
-last_generated_teams = []
 
 # ---------------------------
 # 🔹 Main Configuration
@@ -249,7 +243,7 @@ class UserSignupForm(Modal, title="Sanguine Sunday Signup"):
         learning_freeze_bool = learning_freeze_value in ["yes", "y"]
 
         user_id = str(interaction.user.id)
-        user_name = interaction.user.display_name
+        user_name = sanitize_nickname(interaction.user.display_name)
         timestamp = datetime.now(CST).strftime("%Y-%m-%d %H:%M:%S")
         
         row_data = [
@@ -371,7 +365,7 @@ class MentorSignupForm(Modal, title="Sanguine Sunday Mentor Signup"):
         learning_freeze_bool = False
 
         user_id = str(interaction.user.id)
-        user_name = interaction.user.display_name
+        user_name = sanitize_nickname(interaction.user.display_name)
         timestamp = datetime.now(CST).strftime("%Y-%m-%d %H:%M:%S")
         
         row_data = [
@@ -578,6 +572,11 @@ def normalize_role(p: dict) -> str:
         return "proficient"
     return "highly proficient"
 
+def prof_rank(p: dict) -> int:
+    role = normalize_role(p)
+    order = {"mentor":0, "highly proficient":1, "proficient":2, "learner":3, "new":4}
+    return order.get(role, 5)
+
 PROF_ORDER = {"mentor": 0, "highly proficient": 1, "proficient": 2, "learner": 3, "new": 4}
 
 def prof_rank(p: dict) -> int:
@@ -585,27 +584,6 @@ def prof_rank(p: dict) -> int:
 
 def scythe_icon(p: dict) -> str:
     return "✅" if p.get("has_scythe") else "❌"
-
-def freeze_icon(p: dict) -> str:
-    return " 🧊" if str(p.get("learning_freeze", "")).lower() in ("true","1","yes") else ""
-
-def format_player_line(guild: discord.Guild, p: dict) -> str:
-    uid = int(p.get("user_id", 0)) if str(p.get("user_id","0")).isdigit() else None
-    if uid:
-        member = guild.get_member(uid)
-        mention = member.mention if member else f"<@{uid}>"
-    else:
-        # Fallback to Discord_ID field name if present
-        try:
-            uid2 = int(p.get("Discord_ID", 0))
-            member = guild.get_member(uid2)
-            mention = member.mention if member else f"<@{uid2}>"
-        except Exception:
-            mention = p.get("user_name", "Unknown")
-    role_text = p.get("proficiency", "Unknown").replace(" ", "-").capitalize().replace("-", " ")
-    kc_raw = p.get("kc", 0)
-    kc_text = f"({kc_raw} KC)" if isinstance(kc_raw, int) and kc_raw > 0 and role_text != "Mentor" else ""
-    return f"{mention} • **{role_text}** {kc_text} • {scythe_icon(p)} Scythe •{freeze_icon(p)}"
 
 async def find_latest_signup_message(channel: discord.TextChannel) -> Optional[discord.Message]:
     """Finds the most recent Sanguine Sunday signup message in a channel."""
@@ -744,11 +722,8 @@ def pop_complementary_learners(learners_list: list) -> (dict, dict):
 # --- Matchmaking Slash Command (REWORKED + Highly Proficient) ---
 @bot.tree.command(name="sangmatch", description="Create ToB teams from signups in a voice channel.")
 @app_commands.checks.has_role(STAFF_ROLE_ID)
-@app_commands.describe(voice_channel="Optional: The voice channel to pull users from. If omitted, uses all signups.",
-                      channel="(Optional) Override the text channel to post teams (testing).")
-async def sangmatch(interaction: discord.Interaction,
-                    voice_channel: Optional[discord.VoiceChannel] = None,
-                    channel: Optional[discord.TextChannel] = None):
+@app_commands.describe(voice_channel="Optional: The voice channel to pull users from. If omitted, uses all signups.")
+async def sangmatch(interaction: discord.Interaction, voice_channel: Optional[discord.VoiceChannel] = None):
     # --- SANG_POSTPROCESS_RULES: enforce hard constraints ---
     def role_of(p): return normalize_role(p)
     def is_new(p): return role_of(p) == "new"
@@ -945,7 +920,7 @@ async def sangmatch(interaction: discord.Interaction,
 
         available_raiders.append({
             "user_id": user_id,
-                "user_name": signup.get("Discord_Name"),
+                "user_name": sanitize_nickname(signup.get("Discord_Name")),
                 "proficiency": proficiency_val, # Use calculated/sheet proficiency
                 "kc": kc_val, # Use the integer KC value (or default)
                 "has_scythe": str(signup.get("Has_Scythe", "FALSE")).upper() == "TRUE",
@@ -1056,9 +1031,6 @@ async def sangmatch(interaction: discord.Interaction,
         leftover_pool = leftover_pool[4:]
         teams.append(spill)
 
-    global last_generated_teams
-    last_generated_teams = teams
-
     # --- 4f) Post-process to enforce New-player constraints ---
     def is_new(p): 
         return p.get("proficiency") == "new"
@@ -1149,19 +1121,24 @@ async def sangmatch(interaction: discord.Interaction,
         return
 
     # --- Create voice channels under SanguineSunday – Team X pattern ---
-#   guild = interaction.guild
-#   category = guild.get_channel(SANG_VC_CATEGORY_ID)
-#   created_voice_channel_ids = []
-#   if category and hasattr(category, "create_voice_channel"):
-#       for i in range(len(teams)):
-#           try:
-#               vc = await category.create_voice_channel(name=f"SanguineSunday – Team {i+1}")
-#               created_voice_channel_ids.append(vc.id)
-#            except Exception:
-#                pass  # non-fatal
+    guild = interaction.guild
+    category = guild.get_channel(SANG_VC_CATEGORY_ID)
+    created_voice_channel_ids = []
+    if category and hasattr(category, "create_voice_channel"):
+        for i in range(len(teams)):
+            try:
+                vc = await category.create_voice_channel(name=f"SanguineSunday – Team {i+1}")
+                created_voice_channel_ids.append(vc.id)
+            except Exception:
+                pass  # non-fatal
 
     # Determine post channel (testing override allowed)
-    post_channel = channel or guild.get_channel(SANG_POST_CHANNEL_ID) or interaction.channel
+    if 'channel' in locals() and isinstance(channel, discord.TextChannel):
+        post_channel = channel
+    else:
+        post_channel = guild.get_channel(SANG_POST_CHANNEL_ID)
+    if post_channel is None:
+        post_channel = interaction.channel
 
     embed = discord.Embed(
         title=f"Sanguine Sunday Teams - {channel_name}",
@@ -1182,7 +1159,7 @@ async def sangmatch(interaction: discord.Interaction,
     # Sort each team's display Mentor → HP → Pro → Learner → New
     for i, team in enumerate(teams, start=1):
         team_sorted = sorted(team, key=prof_rank)
-        lines = [format_player_line(guild, p) for p in team_sorted]
+        lines = [user_line(p) for p in team_sorted]
         embed.add_field(name=f"Team {i}", value="\n".join(lines) if lines else "—", inline=False)
 
     # If a VC was provided, show unassigned
@@ -1205,31 +1182,342 @@ async def sangmatch(interaction: discord.Interaction,
 
     await interaction.followup.send(embed=embed)
 
+
+# --- Plain-text formatter (no mentions) ---
+def format_player_line_plain(guild: discord.Guild, p: dict) -> str:
+    nickname = p.get("user_name") or "Unknown"
+    role_text = p.get("proficiency", "Unknown").replace(" ", "-").capitalize().replace("-", " ")
+    kc_raw = p.get("kc", 0)
+    kc_text = f"({kc_raw} KC)" if isinstance(kc_raw, int) and kc_raw > 0 and role_text != "Mentor" else ""
+    return f"{nickname} • **{role_text}** {kc_text} • {scythe_icon(p)} Scythe •{freeze_icon(p)}"
+
+@bot.tree.command(name="sangmatchtest", description="Create ToB teams without pinging or creating voice channels; show plain-text nicknames.")
+@app_commands.checks.has_role(STAFF_ROLE_ID)
+@app_commands.describe(
+    voice_channel="Optional: The voice channel to pull users from. If omitted, uses all signups.",
+    channel="(Optional) Override the text channel to post teams (testing)."
+)
+async def sangmatchtest(
+    interaction: discord.Interaction,
+    voice_channel: Optional[discord.VoiceChannel] = None,
+    channel: Optional[discord.TextChannel] = None
+):
+    def role_of(p): return normalize_role(p)
+    def is_new(p): return role_of(p) == "new"
+    def is_learner(p): return role_of(p) == "learner"
+    def is_pro(p): return role_of(p) in ("proficient","highly proficient")
+    def is_hp(p): return role_of(p) == "highly proficient"
+    def is_mentor(p): return role_of(p) == "mentor"
+    def has_scythe(p): return bool(p.get("has_scythe"))
+    def is_freeze_learner(p): return str(p.get("learning_freeze")).lower() in ("true","1","yes")
+
+    def count(predicate, team): return sum(1 for x in team if predicate(x))
+    def has(predicate, team): return any(predicate(x) for x in team)
+
+    def ensure_mentor_with_pro(teams):
+        for i, t in enumerate(teams):
+            if has(is_mentor, t) and not has(is_pro, t):
+                for j, u in enumerate(teams):
+                    if i==j: continue
+                    if sum(1 for x in u if is_pro(x)) > 1:
+                        idx = next(k for k,x in enumerate(u) if is_pro(x))
+                        t.append(u.pop(idx)); break
+
+    def enforce_new_rules(teams):
+        for i, t in enumerate(list(teams)):
+            if count(is_new, t) > 0:
+                while len(t) in (3,5) and count(is_new, t) > 0:
+                    idx = next(k for k,x in enumerate(t) if is_new(x))
+                    moved = t.pop(idx)
+                    placed = False
+                    for j,u in enumerate(teams):
+                        if i==j: continue
+                        if len(u) == 4 and has(is_mentor,u) and has(is_pro,u) and count(is_new,u) < 2:
+                            u.append(moved); placed=True; break
+                    if not placed:
+                        teams.append([moved]); t = teams[i]
+                if not has(is_mentor, t):
+                    for j,u in enumerate(teams):
+                        if i==j: continue
+                        if count(is_mentor, u) > 1:
+                            idx = next(k for k,x in enumerate(u) if is_mentor(x))
+                            t.append(u.pop(idx)); break
+                if not has(is_pro, t):
+                    for j,u in enumerate(teams):
+                        if i==j: continue
+                        if sum(1 for x in u if is_pro(x)) > 1:
+                            idx = next(k for k,x in enumerate(u) if is_pro(x))
+                            t.append(u.pop(idx)); break
+                while len(t) != 4 and count(is_new, t) > 0:
+                    if len(t) > 4:
+                        idx = next((k for k,x in enumerate(t) if not is_new(x)), None)
+                        if idx is not None:
+                            for j,u in enumerate(teams):
+                                if i==j: continue
+                                if len(u) < 5:
+                                    u.append(t.pop(idx)); break
+                        else:
+                            break
+                    elif len(t) < 4:
+                        pulled=False
+                        for j,u in enumerate(teams):
+                            if i==j: continue
+                            idx = next((k for k,x in enumerate(u) if is_pro(x)), None)
+                            if idx is not None:
+                                t.append(u.pop(idx)); pulled=True; break
+                        if not pulled:
+                            break
+
+    def enforce_learner_3_and_5(teams):
+        for i, t in enumerate(teams):
+            if len(t) == 3:
+                if any(is_learner(x) and not has_scythe(x) for x in t):
+                    idx = next(k for k,x in enumerate(t) if is_learner(x) and not has_scythe(x))
+                    moved = t.pop(idx)
+                    placed=False
+                    for j,u in enumerate(teams):
+                        if i==j: continue
+                        if len(u) == 4 and count(is_new,u) == 0:
+                            u.append(moved); placed=True; break
+                    if not placed: teams.append([moved])
+            if len(t) == 5 and count(is_new,t) > 0:
+                if count(is_new,t) > 0:
+                    idx = next(k for k,x in enumerate(t) if is_new(x))
+                    moved = t.pop(idx)
+                else:
+                    idx = next((k for k,x in enumerate(t) if is_learner(x)), 0)
+                    moved = t.pop(idx)
+                placed=False
+                for j,u in enumerate(teams):
+                    if i==j: continue
+                    if len(u) < 5 and count(is_new,u) == 0:
+                        u.append(moved); placed=True; break
+                if not placed: teams.append([moved])
+
+    def split_freeze_learners(teams):
+        for i,t in enumerate(teams):
+            while sum(1 for x in t if is_freeze_learner(x)) > 1:
+                idx = next(k for k,x in enumerate(t) if is_freeze_learner(x))
+                moved = t.pop(idx)
+                placed=False
+                for j,u in enumerate(teams):
+                    if i==j: continue
+                    if sum(1 for x in u if is_freeze_learner(x)) == 0 and len(u) < 5:
+                        u.append(moved); placed=True; break
+                if not placed: teams.append([moved])
+
+    def rebalance(teams):
+        ensure_mentor_with_pro(teams)
+        enforce_new_rules(teams)
+        enforce_learner_3_and_5(teams)
+        split_freeze_learners(teams)
+
+    if not sang_sheet:
+        await interaction.response.send_message("⚠️ Error: The Sanguine Sunday sheet is not connected.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=False)
+
+    vc_member_ids = None
+    channel_name = "All Signups"
+    if voice_channel:
+        channel_name = voice_channel.name
+        if not voice_channel.members:
+            await interaction.followup.send(f"⚠️ No users are in {voice_channel.mention}.")
+            return
+        vc_member_ids = {str(m.id) for m in voice_channel.members if not m.bot}
+        if not vc_member_ids:
+            await interaction.followup.send(f"⚠️ No human users are in {voice_channel.mention}.")
+            return
+
+    try:
+        all_signups_records = sang_sheet.get_all_records()
+        if not all_signups_records:
+            await interaction.followup.send("⚠️ There are no signups in the database.")
+            return
+    except Exception as e:
+        print(f"🔥 GSheet error fetching all signups: {e}")
+        await interaction.followup.send("⚠️ An error occurred fetching signups from the database.")
+        return
+
+    available_raiders = []
+    for signup in all_signups_records:
+        user_id = str(signup.get("Discord_ID"))
+        if vc_member_ids and user_id not in vc_member_ids:
+            continue
+        roles_str = signup.get("Favorite Roles", "")
+        knows_range, knows_melee = parse_roles(roles_str)
+        kc_raw = signup.get("KC", 0)
+        try:
+            kc_val = int(kc_raw)
+        except (ValueError, TypeError):
+            kc_val = 9999 if signup.get("Proficiency", "").lower() == 'mentor' else 0
+
+        proficiency_val = signup.get("Proficiency", "").lower()
+        if proficiency_val != 'mentor':
+            if kc_val <= 1:
+                proficiency_val = "new"
+            elif 2 <= kc_val <= 25:
+                proficiency_val = "learner"
+            elif 26 <= kc_val <= 149:
+                proficiency_val = "proficient"
+            else:
+                proficiency_val = "highly proficient"
+
+        available_raiders.append({
+            "user_id": user_id,
+            "user_name": sanitize_nickname(signup.get("Discord_Name")),
+            "proficiency": proficiency_val,
+            "kc": kc_val,
+            "has_scythe": str(signup.get("Has_Scythe", "FALSE")).upper() == "TRUE",
+            "roles_known": roles_str,
+            "learning_freeze": str(signup.get("Learning Freeze", "FALSE")).upper() == "TRUE",
+            "knows_range": knows_range,
+            "knows_melee": knows_melee
+        })
+
+    if not available_raiders:
+        await interaction.followup.send(f"⚠️ None of the users in {voice_channel.mention} have signed up for the event." if voice_channel else "⚠️ No eligible signups.")
+        return
+
+    available_raiders.sort(key=lambda p: (prof_rank(p), not p.get("has_scythe"), -int(p.get("kc", 0))))
+    mentors   = [p for p in available_raiders if p["proficiency"] == "mentor"]
+    high_pro  = [p for p in available_raiders if p["proficiency"] == "highly proficient"]
+    pro       = [p for p in available_raiders if p["proficiency"] == "proficient"]
+    learners  = [p for p in available_raiders if p["proficiency"] == "learner"]
+    news      = [p for p in available_raiders if p["proficiency"] == "new"]
+
+    total_players = len(available_raiders)
+    ideal_size = 5
+    min_teams_by_size = math.ceil(total_players / ideal_size) if total_players else 0
+    num_teams = max(1, min(len(mentors) if mentors else min_teams_by_size, min_teams_by_size))
+    if len(mentors) < num_teams:
+        num_teams = max(len(mentors), 1)
+
+    teams = [[] for _ in range(num_teams)]
+    for i, mtr in enumerate(mentors[:num_teams]): teams[i].append(mtr)
+    strong = high_pro + pro
+
+    def pop_with_scythe(prefer_scythe=True):
+        idx = next((i for i, p in enumerate(strong) if p.get("has_scythe")), None) if prefer_scythe else None
+        if idx is None: return strong.pop(0) if strong else None
+        return strong.pop(idx)
+
+    for i in range(num_teams):
+        if not strong: break
+        prefer_s = not any(member.get("has_scythe") for member in teams[i])
+        pick = pop_with_scythe(prefer_s)
+        if pick: teams[i].append(pick)
+
+    for i in range(num_teams):
+        if not strong: break
+        prefer_s = not any(member.get("has_scythe") for member in teams[i])
+        pick = pop_with_scythe(prefer_s)
+        if pick: teams[i].append(pick)
+
+    def add_role_bucket(bucket):
+        i = 0
+        while bucket:
+            placed = False
+            for _ in range(num_teams):
+                t = teams[i]
+                if len(t) < ideal_size:
+                    has_strong = any(prof_rank(p) <= PROF_ORDER["proficient"] for p in t)
+                    if has_strong or bucket is learners:
+                        t.append(bucket.pop(0)); placed = True; break
+                i = (i + 1) % num_teams
+            if not placed: break
+
+    add_role_bucket(learners)
+    add_role_bucket(news)
+
+    while strong:
+        placed = False
+        for i in range(num_teams):
+            if len(teams[i]) < ideal_size:
+                teams[i].append(strong.pop(0)); placed = True
+                if not strong: break
+        if not placed: break
+
+    leftover_pool = [p for p in available_raiders if p not in [m for team in teams for m in team]]
+    while leftover_pool:
+        spill = leftover_pool[:4]; leftover_pool = leftover_pool[4:]; teams.append(spill)
+
+    try:
+        rebalance(teams)
+    except Exception as e:
+        warn = discord.Embed(title="❌ Team Generation Failed", description=f"Could not satisfy rules: {e}", color=discord.Color.red())
+        await interaction.response.send_message(embed=warn, ephemeral=True)
+        return
+
+    guild = interaction.guild
+    post_channel = channel or guild.get_channel(SANG_POST_CHANNEL_ID) or interaction.channel
+    embed = discord.Embed(
+        title=f"Sanguine Sunday Teams (Test, no pings/VC) - {channel_name}",
+        description=f"Created {len(teams)} team(s) from {len(available_raiders)} available signed-up users.",
+        color=discord.Color.dark_gray()
+    )
+    for i, team in enumerate(teams, start=1):
+        team_sorted = sorted(team, key=prof_rank)
+        lines = [format_player_line_plain(guild, p) for p in team_sorted]
+        embed.add_field(name=f"Team {i}", value="\n".join(lines) if lines else "—", inline=False)
+
+    if voice_channel:
+        assigned_ids = {p["user_id"] for t in teams for p in t}
+        unassigned_ids = [uid for uid in vc_member_ids or [] if uid not in assigned_ids]
+        if unassigned_ids:
+            names = []
+            for uid in unassigned_ids:
+                m = guild.get_member(int(uid))
+                names.append(m.display_name if m else f"User {uid}")
+            embed.add_field(name="Unassigned Users in VC", value=", ".join(names), inline=False)
+
+    await post_channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    await interaction.followup.send("✅ Posted no-ping test teams (no voice channels created).", ephemeral=True)
+
+
+
+
 @bot.tree.command(name="sangexport", description="Export the most recently generated teams to a text file.")
 @app_commands.checks.has_any_role("Administrators", "Clan Staff", "Senior Staff", "Staff", "Trial Staff")
 async def sangexport(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True, thinking=True)
-    # Expect a global 'last_generated_teams' set during sangmatch
     global last_generated_teams
-    try:
-        teams = last_generated_teams
-    except NameError:
-        teams = None
+    teams = last_generated_teams if 'last_generated_teams' in globals() else None
     if not teams:
         await interaction.followup.send("⚠️ No teams found from this session.", ephemeral=True)
         return
-    # Prepare text
+
+    guild = interaction.guild
+
+    def resolve_discord_id(p: dict):
+        sname = sanitize_nickname(p.get("user_name", ""))
+        mid = find_member_id_by_sanitized_nickname(guild, sname)
+        if mid:
+            return mid
+        uid_str = str(p.get("user_id") or p.get("Discord_ID") or "")
+        return int(uid_str) if uid_str.isdigit() else None
+
     lines = []
     for i, team in enumerate(teams, start=1):
         lines.append(f"Team {i}")
         for p in team:
-            lines.append(f"  - {format_player_line(interaction.guild, p)}")
+            sname = sanitize_nickname(p.get("user_name", "Unknown"))
+            mid = resolve_discord_id(p)
+            id_text = str(mid) if mid is not None else "UnknownID"
+            lines.append(f"  - {sname} — ID: {id_text}")
         lines.append("")
+
     txt = "\n".join(lines)
     outpath = "/mnt/data/sanguine_teams.txt"
     with open(outpath, "w", encoding="utf-8") as f:
         f.write(txt)
-    await interaction.followup.send(content="📄 Exported teams:", file=discord.File(outpath, filename="sanguine_teams.txt"), ephemeral=True)
+
+    await interaction.followup.send(
+        content="📄 Exported teams:",
+        file=discord.File(outpath, filename="sanguine_teams.txt"),
+        ephemeral=True
+    )
 
 @bot.tree.command(name="sangcleanup", description="Delete auto-created SanguineSunday voice channels from the last run.")
 @app_commands.checks.has_any_role("Administrators", "Clan Staff", "Senior Staff", "Staff", "Trial Staff")
