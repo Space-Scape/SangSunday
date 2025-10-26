@@ -43,15 +43,13 @@ sheet_client = gspread.authorize(creds)
 # ---------------------------
 # 🔹 Sang Sheet Setup
 # ---------------------------
-SANG_SHEET_ID = "1CCpDAJO7Cq581yF_-rz3vx7L_BTettVaKglSvOmvTOE" # <-- Specific ID for Sang Signups
+SANG_SHEET_ID = "1CCpDAJO7Cq581yF_-rz3vx7L_BTettVaKglSvOmvTOE"
 SANG_SHEET_TAB_NAME = "SangSignups"
-SANG_HISTORY_TAB_NAME = "History" # <-- ADDED
+SANG_HISTORY_TAB_NAME = "History"
 
 try:
-    # Use the specific SANG_SHEET_ID and the main sheet_client
-    sang_google_sheet = sheet_client.open_by_key(SANG_SHEET_ID) # <-- Get the spreadsheet
+    sang_google_sheet = sheet_client.open_by_key(SANG_SHEET_ID)
     
-    # Try to get SangSignups sheet
     try:
         sang_sheet = sang_google_sheet.worksheet(SANG_SHEET_TAB_NAME)
     except gspread.exceptions.WorksheetNotFound:
@@ -59,7 +57,6 @@ try:
         sang_sheet = sang_google_sheet.add_worksheet(title=SANG_SHEET_TAB_NAME, rows="100", cols="20")
         sang_sheet.append_row(["Discord_ID", "Discord_Name", "Favorite Roles", "KC", "Has_Scythe", "Proficiency", "Learning Freeze", "Timestamp"])
 
-    # Try to get History sheet
     try:
         history_sheet = sang_google_sheet.worksheet(SANG_HISTORY_TAB_NAME)
     except gspread.exceptions.WorksheetNotFound:
