@@ -731,183 +731,125 @@ def matchmaking_algorithm(available_raiders: List[Dict[str, Any]]) -> List[List[
     # Combine HP and Pro into one pool, sorted by rank/KC
     strong_pool = sorted(high_pro + pro, key=lambda p: (prof_rank(p), -int(p.get("kc", 0))))
     
-    # Combined pool of non-mentors (for filling)
-    filling_pool = strong_pool + learners + news
-
     # 2. Team Initialization: Create one team per Mentor.
+    if not mentors:
+        # If no mentors, we cannot form supported teams, so we just return the best teams we can make
+        # For now, if no mentors, the output will likely be messy based on the requirements, so we return empty.
+        # This forces the staff to ensure mentors sign up first.
+        return [] 
+        
     num_teams = len(mentors)
-    if num_teams == 0 and len(available_raiders) >= 3:
-        # If no mentors, still try to form teams, prioritizing strong players as leaders
-        num_teams = max(1, math.floor(len(available_raiders) / 4))
-        teams = [[] for _ in range(num_teams)]
-        # Add a strong player to each team if possible
-        for i in range(num_teams):
-            if strong_pool: teams[i].append(strong_pool.pop(0))
-        # Recalculate filling pool after removing leaders
-        filling_pool = strong_pool + learners + news
-    elif num_teams == 0:
-        return []
-
     teams = [[] for _ in range(num_teams)]
     
-    # 2a. Assign Mentors to their own teams (Pass 1)
-    for i, mtr in enumerate(mentors):
-        teams[i].append(mtr)
-        
-    # 2b. Add 1 Pro/HP to every Mentor team (Pass 2)
-    # Ensure Mentor teams have a strong partner (Mentor-alone is forbidden)
-    for i in range(num_teams):
-        if not strong_pool: break
-        teams[i].append(strong_pool.pop(0))
-        
-    # 3. Distribute remaining players (Prioritizing teams of 4)
-    # Players are placed round-robin into teams, prioritizing filling teams up to size 4 first.
-    
-    # Helper to find the smallest team index, prioritizing those under size 4
-    def get_target_team_index(target_size=4):
-        min_size = min(len(t) for t in teams)
-        # Prioritize teams smaller than the target size
-        under_target = [i for i, t in enumerate(teams) if len(t) < target_size]
-        if under_target:
-            # Among those under the target size, pick the smallest
-            min_len = min(len(teams[i]) for i in under_target)
-            return under_target[0] # Just grab the first one
-        
-        # If all teams are target size or larger, pick the smallest overall to balance
-        min_size = min(len(t) for t in teams)
-        return next(i for i, t in enumerate(teams) if len(t) == min_size)
+    # Track the remaining players for final cleanup
+    remaining_players = []
 
-    # Place remaining strong players, then Learners, then New players
-    for pool in [strong_pool, learners, news]:
-        while pool:
-            player = pool.pop(0)
-            
-            # Find the best team to place the player
-            target_idx = get_target_team_index(target_size=4)
-            target_team = teams[target_idx]
-            
-            # --- New Player Guardrail ---
-            # If the player is 'New', they must be placed in a team of size 3 (to make 4) or size 4.
-            # And that team must already have a Mentor + Pro/HP.
-            if normalize_role(player) == "new":
-                has_mentor_or_strong = any(normalize_role(p) in ["mentor", "highly proficient", "proficient"] for p in target_team)
-                
-                # If target team is already too full, or lacks basic support, or is size 5, skip it for 'new'
-                if len(target_team) >= 5 or not has_mentor_or_strong:
-                     # Put the player back in the pool and try next team (this is messy, so we use a fallback pool)
-                     # For simplicity and correctness, if we can't place 'new' player in a good team, they become a leftover.
-                     pool.insert(0, player)
-                     break
-            
-            # Default placement is into the target team
-            target_team.append(player)
-            
-    # 4. Final Cleanup (Leftovers)
+    # 3. Anchor Assignment: Mentor + Support (New/Learner)
     
-    # Any players left in the strong, learner, or news pools are leftovers
+    # 3a. Assign Mentors (Pass 1)
+    for i, mtr in enumerate(mentors):
+        teams[i].append(mentors.pop(0)) # Pop from the list to update `mentors` list implicitly
+
+    # 3b. Assign New players (Pass 2)
+    for i in range(num_teams):
+        if news:
+            teams[i].append(news.pop(0))
+        elif learners:
+             # If no new, give the team a learner instead
+            teams[i].append(learners.pop(0))
+
+    # 3c. Assign 1 Pro/HP to every Mentor team (Pass 3)
+    # This ensures Mentor is NEVER alone and Mentor/New teams get a second experienced player.
+    for i in range(num_teams):
+        if strong_pool:
+            teams[i].append(strong_pool.pop(0))
+    
+    # 4. Fill remaining spots (size 4, size 5) with leftovers
+    
+    # Consolidate all remaining pools
     leftovers = strong_pool + learners + news
     
-    # If leftovers exist, try to merge them into existing teams (up to size 5)
-    for player in leftovers:
-        placed = False
-        # Try to place into an existing team up to size 4
-        for i in range(len(teams)):
-            if len(teams[i]) < 5:
-                # Enforce: No New in 5s
-                if len(teams[i]) == 4 and normalize_role(player) == 'new':
-                    continue
-                
-                teams[i].append(player)
-                placed = True
-                break
+    # Distribute the remaining players round-robin until teams are full (up to size 4 first)
+    i = 0
+    while leftovers:
+        player = leftovers.pop(0)
         
-        # If still not placed, they become stranded (or form an undersized team)
-        if not placed:
-            teams.append([player]) # Create a new team, size 1
+        # Try to place in a team under size 4 first
+        target_team = teams[i % num_teams]
+        
+        if len(target_team) < 4:
+            target_team.append(player)
+        elif len(target_team) < 5:
+            # Check for New rule before making a 5-man team
+            if normalize_role(player) == 'new' and len(target_team) == 4:
+                # Cannot make a 5-man team with a new player; put player back and break loop for now.
+                # This player will become a true leftover.
+                leftovers.insert(0, player) 
+                break
+            
+            # Check for Freeze rule before adding to a team
+            freeze_conflict = player.get('learning_freeze') and any(p.get('learning_freeze') for p in target_team)
+            if freeze_conflict:
+                 leftovers.insert(0, player)
+                 break
+                 
+            target_team.append(player)
+        else:
+            # Team is already size 5, player remains a true leftover
+            leftovers.insert(0, player)
+            break
+            
+        i += 1
+        
+    # 5. Final Cleanup and Stranded Logic
+    
+    # Any players still left in `leftovers` need special handling
+    
+    # Try to form a single last team of 3 or 4 from leftovers
+    if len(leftovers) >= 3 and len(leftovers) <= 4:
+        # Check 3-man team rule (no New or Learner w/out Scythe)
+        if len(leftovers) == 3:
+            has_new = any(normalize_role(p) == 'new' for p in leftovers)
+            has_unsupported_learner = any(normalize_role(p) == 'learner' and not p.get('has_scythe') for p in leftovers)
+            
+            if not has_new and not has_unsupported_learner:
+                teams.append(leftovers)
+                leftovers = []
+    
+    # If leftovers still remain, they are stranded
+    if leftovers:
+        # For display purposes, append the remaining single/doubleton team(s)
+        # to the end, even if they violate the size 3 minimum.
+        teams.append(leftovers) 
 
-    # Remove empty teams
-    teams = [t for t in teams if t]
-    
-    # --- 5. Final Validation and Enforcement ---
-    
-    # Filter teams that violate the hard constraints (e.g., small, unsupported teams)
-    valid_teams = []
-    stranded = []
+    # 6. Final Validation Pass (Removes teams that violate hard rules if they were formed during cleanup)
+    final_teams = []
     
     for team in teams:
         team_size = len(team)
         
-        # Rule Check 1: No New in 3s or 5s.
+        # Rule Check: Teams of size 1 or 2 are not considered valid teams
+        if team_size < 3:
+            continue 
+
+        # Rule Check 1: No New in 3s or 5s. (Teams are primarily 4/5 now, but check 3/5)
         has_new = any(normalize_role(p) == 'new' for p in team)
         if has_new and team_size in (3, 5):
-            # If New is in a bad size team, move the New players to stranded pool
-            for player in team:
-                if normalize_role(player) == 'new':
-                    stranded.append(player)
-                else:
-                    valid_teams.append([player]) # Keep non-new players (Mentor/HP/Pro) in single teams for re-allocation
+            # If this happened during cleanup, we must discard the team.
             continue
 
-        # Rule Check 2: No Learner in 3s without Scythe (meaning only Scythe Learners are okay in 3s)
+        # Rule Check 2: No Learner in 3s without Scythe
         has_unsupported_learner = any(normalize_role(p) == 'learner' and not p.get('has_scythe') for p in team)
         if has_unsupported_learner and team_size == 3:
-            # Break up the team and strand unsupported learners
-            for player in team:
-                if normalize_role(player) == 'learner' and not p.get('has_scythe'):
-                    stranded.append(player)
-                else:
-                    valid_teams.append([player])
             continue
             
         # Rule Check 3: No two Freeze Learners together.
         freeze_count = sum(1 for p in team if p.get('learning_freeze'))
         if freeze_count > 1:
-            # We cannot easily fix this with current logic, so we break up the team and try to re-allocate
-            for player in team:
-                 stranded.append(player)
             continue
             
-        # Rule Check 4: No Mentor-alone (must have Pro/HP).
-        is_mentor_alone = team_size == 1 and normalize_role(team[0]) == 'mentor'
-        if is_mentor_alone:
-            # Strand the mentor to be re-allocated later
-            stranded.append(team[0])
-            continue
-
-
-        valid_teams.append(team)
-
-    # Re-assemble valid teams and re-run leftovers to try to fit stranded players
-    final_teams = [t for t in valid_teams if len(t) >= 3] # Only finalize teams of 3+
-    spillover_pool = [p for t in valid_teams if len(t) < 3 for p in t] + stranded
-
-    # Try one last pass to merge spillover into final teams (up to size 5, respecting New rules)
-    while spillover_pool:
-        player = spillover_pool.pop(0)
-        placed = False
+        final_teams.append(team)
         
-        for i in range(len(final_teams)):
-            team = final_teams[i]
-            if len(team) < 5:
-                # Check New rule
-                if len(team) == 4 and normalize_role(player) == 'new':
-                    continue # Cannot make 5-man with New player
-
-                # Check Freeze rule
-                if player.get('learning_freeze') and any(p.get('learning_freeze') for p in team):
-                    continue
-
-                final_teams[i].append(player)
-                placed = True
-                break
-        
-        if not placed:
-            # Create a new team if no existing team can take them
-            final_teams.append([player])
-
-    # Filter final teams again (e.g., ensure no singletons/doubletons remain unless absolutely necessary)
-    final_teams = [t for t in final_teams if len(t) >= 3] + [t for t in final_teams if len(t) < 3]
-    
     return final_teams
 
 # --- Matchmaking Slash Command (REWORKED + Highly Proficient) ---
@@ -1012,7 +954,7 @@ async def sangmatch(interaction: discord.Interaction, voice_channel: Optional[di
 
     embed = discord.Embed(
         title=f"Sanguine Sunday Teams - {channel_name}",
-        description=f"Created {len(teams)} team(s) from {len(available_raiders)} available signed-up users.",
+        description=f"Created {len(teams)} valid team(s) from {len(available_raiders)} available signed-up users.",
         color=discord.Color.red()
     )
 
@@ -1051,14 +993,26 @@ async def sangmatch(interaction: discord.Interaction, voice_channel: Optional[di
         assigned_ids = {p["user_id"] for t in teams for p in t}
         unassigned_users = vc_member_ids - assigned_ids
     
-    if unassigned_users:
+    # Check for players who signed up but were left over (not in a final_teams list)
+    all_assigned_ids = {p["user_id"] for t in teams for p in t}
+    all_signed_up_ids = {p["user_id"] for p in available_raiders}
+    leftover_signups = all_signed_up_ids - all_assigned_ids
+    
+    if unassigned_users or leftover_signups:
         mentions = []
+        # Add users who were in VC but not signed up
         for uid in unassigned_users:
             m = guild.get_member(int(uid))
-            mentions.append(m.mention if m else f"<@{uid}>")
+            mentions.append(f"{m.mention} (VC/No Signup)" if m else f"<@{uid}> (VC/No Signup)")
+
+        # Add users who signed up but weren't placed in a valid team
+        for uid in leftover_signups:
+            m = guild.get_member(int(uid))
+            mentions.append(f"{m.mention} (Leftover)" if m else f"<@{uid}> (Leftover)")
+            
         embed.add_field(
-            name="Unassigned Users in VC",
-            value=f"These users were in the VC but were not assigned (either not signed up or left over):\n{' '.join(mentions)}",
+            name="Unassigned/Leftover Users",
+            value="\n".join(mentions),
             inline=False
         )
     
@@ -1173,7 +1127,7 @@ async def sangmatchtest(
     
     embed = discord.Embed(
         title=f"Sanguine Sunday Teams (Test, no pings/VC) - {channel_name}",
-        description=f"Created {len(teams)} team(s) from {len(available_raiders)} available signed-up users.",
+        description=f"Created {len(teams)} valid team(s) from {len(available_raiders)} available signed-up users.",
         color=discord.Color.dark_gray()
     )
     
