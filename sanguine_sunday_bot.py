@@ -681,20 +681,23 @@ def matchmaking_algorithm(available_raiders: List[Dict[str, Any]]) -> (List[List
     leftover_fill_pool.sort(key=lambda p: (prof_rank(p), not p.get("has_scythe"), -int(p.get("kc", 0))))
 
     # Fill up to 5 players for the non-mentor team
+    stranded = [] # Initialize stranded list inside here to manage flow
     while leftover_fill_pool and len(new_team) < 5:
         # Strict Rule: No "New" players in the non-mentor team if avoidable
-        if leftover_fill_pool[0]["proficiency"] == "new" and len(new_team) < 3 and len(leftover_fill_pool) > 1:
-            # If we are just starting the team, push the New player to stranded for later cleanup
+        player = leftover_fill_pool[0]
+        
+        if player["proficiency"] == "new" and len(new_team) < 3 and len(leftover_fill_pool) > 1:
+            # If we are just starting the team (size < 3), push the New player to stranded for later cleanup
             # unless they are the last player remaining
             stranded_new = leftover_fill_pool.pop(0)
-            if len(leftover_fill_pool) > 0:
+            if leftover_fill_pool:
                  stranded.append(stranded_new)
                  continue # Try to find a non-new player next
 
         new_team.append(leftover_fill_pool.pop(0))
             
-    # Any players remaining are stranded (leftover Strong, Learners, and all New)
-    stranded = leftover_fill_pool[:]
+    # Any players remaining are stranded
+    stranded.extend(leftover_fill_pool)
     
     # If the new team was successfully created (size >= 3), add it to the team list
     if len(new_team) >= 3:
@@ -796,13 +799,14 @@ async def sangsignup(interaction: discord.Interaction, variant: int, channel: Op
 
     if variant == 1:
         await post_signup(target_channel)
-        await interaction.followup.send(f"✅ Signup message posted in {target_channel.mention}.")
     elif variant == 2:
         result = await post_reminder(target_channel)
         if result:
             await interaction.followup.send(f"✅ Learner reminder posted in {target_channel.mention}.")
         else:
             await interaction.followup.send("⚠️ Could not post the reminder.")
+    else:
+        await interaction.followup.send(f"✅ Signup message posted in {target_channel.mention}.")
 
 @sangsignup.error
 async def sangsignup_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
@@ -840,76 +844,63 @@ async def sangmatch(interaction: discord.Interaction, voice_channel: Optional[di
         await interaction.response.send_message("⚠️ Error: The Sanguine Sunday sheet is not connected.", ephemeral=True)
         return
 
-    await interaction.response.defer(ephemeral=False) # Send to channel
+    # 1. Immediately defer the response to avoid timeout
+    await interaction.response.defer(ephemeral=False) 
 
-    # Defer is sent. Now run heavy logic in background
-    await asyncio.sleep(0)
-    
-    # --- 1. Get users in the specified voice channel ---
-    vc_member_ids = None # <-- ADDED
-    channel_name = "All Signups" # <-- ADDED
-
-    if voice_channel: # <-- ADDED IF BLOCK
-        channel_name = voice_channel.name
-        if not voice_channel.members:
-            await interaction.followup.send(f"⚠️ No users are in {voice_channel.mention}.")
-            return
-
-        vc_member_ids = {str(member.id) for member in voice_channel.members if not member.bot}
-        if not vc_member_ids:
-            await interaction.followup.send(f"⚠️ No human users are in {voice_channel.mention}.")
-            return
-
-    # --- 2. Get all signups from GSheet ---
+    # 2. Run the heavy I/O and CPU-bound tasks in the executor
     try:
-        all_signups_records = sang_sheet.get_all_records()
-        if not all_signups_records:
-            await interaction.followup.send("⚠️ There are no signups in the database.")
-            return
+        # A. Get all signups (I/O bound)
+        all_signups_records = await bot.loop.run_in_executor(None, sang_sheet.get_all_records)
     except Exception as e:
         print(f"🔥 GSheet error fetching all signups: {e}")
         await interaction.followup.send("⚠️ An error occurred fetching signups from the database.")
         return
 
-    # --- 3. Filter signups to only users in the VC and parse roles ---
+    # B. Process data (CPU bound, but fast enough to run outside executor for this part)
+    vc_member_ids = None
+    channel_name = "All Signups"
+    
+    if voice_channel:
+        channel_name = voice_channel.name
+        vc_member_ids = {str(member.id) for member in voice_channel.members if not member.bot}
+        if not vc_member_ids and voice_channel.members:
+            await interaction.followup.send(f"⚠️ No human users are in {voice_channel.mention}.")
+            return
+        elif not vc_member_ids:
+            await interaction.followup.send(f"⚠️ No users are in {voice_channel.mention}.")
+            return
+
     available_raiders = []
     for signup in all_signups_records:
         user_id = str(signup.get("Discord_ID"))
         
-        # --- MODIFIED VC CHECK ---
-        # If vc_member_ids is set (a VC was provided), filter by it.
         if vc_member_ids and user_id not in vc_member_ids:
-            continue # Skip this user, not in the specified VC
+            continue
         
         roles_str = signup.get("Favorite Roles", "")
         knows_range, knows_melee = parse_roles(roles_str)
-        kc_raw = signup.get("KC", 0) # Get KC value, default to 0
+        kc_raw = signup.get("KC", 0)
         try:
-            # Convert KC to int, handle potential non-numeric values (like 'N/A' or 'X' for mentors)
             kc_val = int(kc_raw)
         except (ValueError, TypeError):
-            # For Mentors with 'X' or other non-numbers, treat KC as very high for sorting purposes
             kc_val = 9999 if signup.get("Proficiency", "").lower() == 'mentor' else 0
 
-
-        # --- Determine Proficiency including Highly Proficient ---
-        # Use the value from the sheet if it's 'Mentor', otherwise calculate based on KC
         proficiency_val = signup.get("Proficiency", "").lower()
-        if proficiency_val != 'mentor': # Recalculate if not mentor (in case KC changed)
+        if proficiency_val != 'mentor':
             if kc_val <= 1:
                 proficiency_val = "new"
             elif 2 <= kc_val <= 25:
                 proficiency_val = "learner"
             elif 26 <= kc_val <= 149:
                 proficiency_val = "proficient"
-            else: # 150+ KC
+            else:
                 proficiency_val = "highly proficient"
 
         available_raiders.append({
             "user_id": user_id,
             "user_name": sanitize_nickname(signup.get("Discord_Name")),
-            "proficiency": proficiency_val, # Use calculated/sheet proficiency
-            "kc": kc_val, # Use the integer KC value (or default)
+            "proficiency": proficiency_val,
+            "kc": kc_val,
             "has_scythe": str(signup.get("Has_Scythe", "FALSE")).upper() == "TRUE",
             "roles_known": roles_str,
             "learning_freeze": str(signup.get("Learning Freeze", "FALSE")).upper() == "TRUE",
@@ -918,20 +909,20 @@ async def sangmatch(interaction: discord.Interaction, voice_channel: Optional[di
             })
 
     if not available_raiders:
-        await interaction.followup.send(f"⚠️ None of the users in {voice_channel.mention} have signed up for the event.")
+        await interaction.followup.send(f"⚠️ None of the users in {voice_channel.mention} have signed up for the event." if voice_channel else "⚠️ No eligible signups.")
         return
 
-    # --- 4. Matchmaking Logic ---
-    teams, stranded = matchmaking_algorithm(available_raiders)
+    # C. Run the matchmaking algorithm (CPU bound)
+    teams, stranded = await bot.loop.run_in_executor(None, matchmaking_algorithm, available_raiders)
     
     # Store globally for export command
     last_generated_teams = teams
 
-    # --- Create voice channels under SanguineSunday – Team X pattern ---
+    # --- 5. Final Output and VC Creation ---
     guild = interaction.guild
     category = guild.get_channel(SANG_VC_CATEGORY_ID)
     
-    # Clean up old channels first
+    # Clean up old channels first (VC creation is I/O, but fast enough)
     if category and hasattr(category, "channels"):
         for ch in list(category.channels):
             if isinstance(ch, discord.VoiceChannel) and ch.name.startswith("SanguineSunday – Team "):
@@ -948,7 +939,7 @@ async def sangmatch(interaction: discord.Interaction, voice_channel: Optional[di
             except Exception:
                 pass # non-fatal
 
-    # Determine post channel (testing override allowed)
+    # Determine post channel
     post_channel = guild.get_channel(SANG_POST_CHANNEL_ID) or interaction.channel
     
     embed = discord.Embed(
@@ -965,12 +956,10 @@ async def sangmatch(interaction: discord.Interaction, voice_channel: Optional[di
         role_text = p.get("proficiency", "Unknown").replace(" ", "-").capitalize().replace("-", " ")
         kc_raw = p.get("kc", 0)
         
-        # Only show KC if it's a number > 0 and the player is not a Mentor
         kc_display = f"({kc_raw} KC)" if isinstance(kc_raw, int) and kc_raw > 0 and role_text != "Mentor" else ""
         
         return f"{mention} **({nickname})** • **{role_text}** {kc_display} • {scythe_icon(p)} Scythe • {freeze_icon(p)} Freeze"
 
-    # Sort each team's display Mentor → HP → Pro → Learner → New
     for i, team in enumerate(teams, start=1):
         team_sorted = sorted(team, key=prof_rank)
         lines = [user_line(p) for p in team_sorted]
@@ -978,7 +967,6 @@ async def sangmatch(interaction: discord.Interaction, voice_channel: Optional[di
         team_size_label = f"Team {i} (Size: {len(team)})"
         embed.add_field(name=team_size_label, value="\n".join(lines) if lines else "—", inline=False)
 
-    # If players remain stranded (though the logic attempts to prevent this)
     if stranded:
         mentions = [guild.get_member(int(p['user_id'])).mention for p in stranded if guild.get_member(int(p['user_id']))]
         names = [p.get('user_name') for p in stranded]
@@ -1024,29 +1012,27 @@ async def sangmatchtest(
     await interaction.response.defer(ephemeral=False)
     
     # Defer is sent. Now run heavy logic in background
-    await asyncio.sleep(0)
-
-    vc_member_ids = None
-    channel_name = "All Signups"
-    if voice_channel:
-        channel_name = voice_channel.name
-        if not voice_channel.members:
-            await interaction.followup.send(f"⚠️ No users are in {voice_channel.mention}.")
-            return
-        vc_member_ids = {str(m.id) for m in voice_channel.members if not m.bot}
-        if not vc_member_ids:
-            await interaction.followup.send(f"⚠️ No human users are in {voice_channel.mention}.")
-            return
-
+    
+    # A. Get all signups (I/O bound)
     try:
-        all_signups_records = sang_sheet.get_all_records()
-        if not all_signups_records:
-            await interaction.followup.send("⚠️ There are no signups in the database.")
-            return
+        all_signups_records = await bot.loop.run_in_executor(None, sang_sheet.get_all_records)
     except Exception as e:
         print(f"🔥 GSheet error fetching all signups: {e}")
         await interaction.followup.send("⚠️ An error occurred fetching signups from the database.")
         return
+
+    # B. Process data (CPU bound, but fast enough to run outside executor for this part)
+    vc_member_ids = None
+    channel_name = "All Signups"
+    if voice_channel:
+        channel_name = voice_channel.name
+        vc_member_ids = {str(m.id) for m in voice_channel.members if not m.bot}
+        if not vc_member_ids and voice_channel.members:
+            await interaction.followup.send(f"⚠️ No human users are in {voice_channel.mention}.")
+            return
+        elif not vc_member_ids:
+            await interaction.followup.send(f"⚠️ No users are in {voice_channel.mention}.")
+            return
 
     available_raiders = []
     for signup in all_signups_records:
@@ -1089,8 +1075,8 @@ async def sangmatchtest(
         await interaction.followup.send(f"⚠️ None of the users in {voice_channel.mention} have signed up for the event." if voice_channel else "⚠️ No eligible signups.")
         return
 
-    # --- 4. Matchmaking Logic ---
-    teams, stranded = matchmaking_algorithm(available_raiders)
+    # C. Run the matchmaking algorithm (CPU bound)
+    teams, stranded = await bot.loop.run_in_executor(None, matchmaking_algorithm, available_raiders)
     
     # Store globally for export command
     last_generated_teams = teams
