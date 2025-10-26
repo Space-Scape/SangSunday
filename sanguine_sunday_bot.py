@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone, time as dt_time
 from zoneinfo import ZoneInfo
 import gspread.exceptions
 import math
+from pathlib import Path # Import Path for export function
 from zoneinfo import ZoneInfo
 CST = ZoneInfo('America/Chicago')
 
@@ -54,14 +55,12 @@ try:
     sang_google_sheet = sheet_client.open_by_key(SANG_SHEET_ID) # <-- Get the spreadsheet
     
     # Try to get SangSignups sheet
-    SANG_SHEET_HEADER = ["Discord_ID", "Discord_Name", "Favorite Roles", "KC", "Has_Scythe", "Proficiency", "Learning Freeze", "Timestamp"]
-
     try:
         sang_sheet = sang_google_sheet.worksheet(SANG_SHEET_TAB_NAME)
     except gspread.exceptions.WorksheetNotFound:
         print(f"'{SANG_SHEET_TAB_NAME}' not found. Creating...")
         sang_sheet = sang_google_sheet.add_worksheet(title=SANG_SHEET_TAB_NAME, rows="100", cols="20")
-        sang_sheet.append_row(SANG_SHEET_HEADER)
+        sang_sheet.append_row(["Discord_ID", "Discord_Name", "Favorite Roles", "KC", "Has_Scythe", "Proficiency", "Learning Freeze", "Timestamp"])
 
     # Try to get History sheet
     try:
@@ -69,7 +68,7 @@ try:
     except gspread.exceptions.WorksheetNotFound:
         print(f"'{SANG_HISTORY_TAB_NAME}' not found. Creating...")
         history_sheet = sang_google_sheet.add_worksheet(title=SANG_HISTORY_TAB_NAME, rows="1000", cols="20")
-        history_sheet.append_row(SANG_SHEET_HEADER)
+        history_sheet.append_row(["Discord_ID", "Discord_Name", "Favorite Roles", "KC", "Has_Scythe", "Proficiency", "Learning Freeze", "Timestamp"])
 
 except (PermissionError, gspread.exceptions.APIError) as e: # <-- Use fully qualified name
     # This block runs if the bot doesn't have permission to access the file at all.
@@ -106,88 +105,12 @@ MEMBER_ROLE_ID = 1272633036814946324
 MENTOR_ROLE_ID = 1306021911830073414
 SANG_ROLE_ID = 1387153629072592916
 TOB_ROLE_ID = 1272694636921753701
-SENIOR_STAFF_CHANNEL_ID = 1336473990302142484  # Channel for approval notifications.
-ADMINISTRATOR_ROLE_ID = 1272961765034164318     # Role that can approve actions.
-SENIOR_STAFF_ROLE_ID = 1336473488159936512     # Role that can approve actions.
-
-# --- Helper Functions ---
-
-def sanitize_nickname(name: str) -> str:
-    """Removes non-alphanumeric characters that might break spreadsheet parsing, except spaces."""
-    # Retains alphanumeric characters, spaces, and common Discord punctuation (except commas)
-    return re.sub(r'[^\w\s\-\'#&!@$%^*()]', '', name).replace(',', '').strip()
-
-def get_previous_signup(user_id: str) -> Optional[Dict[str, Any]]:
-    """Fetches the latest signup data for a user from the HISTORY sheet."""
-    if not history_sheet: # <-- MODIFIED
-        print("History sheet not available in get_previous_signup.") # <-- MODIFIED & DEBUG removed
-        return None
-    try:
-        all_records = history_sheet.get_all_records() # <-- MODIFIED
-        if not all_records:
-            print("No records found in history_sheet.") # <-- MODIFIED & DEBUG removed
-            return None
-
-        for record in reversed(all_records):
-            sheet_discord_id = record.get("Discord_ID")
-            sheet_discord_id_str = str(sheet_discord_id) if sheet_discord_id is not None else None
-
-            if sheet_discord_id_str == user_id:
-                record["Has_Scythe"] = str(record.get("Has_Scythe", "FALSE")).upper() == "TRUE"
-                record["Learning Freeze"] = str(record.get("Learning Freeze", "FALSE")).upper() == "TRUE"
-                return record
-        print(f"No history match found for user_id: {user_id}") # <-- MODIFIED & DEBUG removed
-        return None
-    except Exception as e:
-        print(f"🔥 GSpread error fetching previous signup for {user_id}: {e}")
-        return None
-
-# --- Matchmaking Helpers ---
-PROF_ORDER = {"mentor": 0, "highly proficient": 1, "proficient": 2, "learner": 3, "new": 4, "unknown": 99}
-FREEZE_ICON = "❄️"
-NO_FREEZE_ICON = "⚪"
-
-def normalize_role(p: dict) -> str:
-    """Determines the correct proficiency level based on the sheet data and KC rules."""
-    prof = str(p.get("Proficiency","")).strip().lower() # Check the value already saved (Mentor)
-    if prof == "mentor":
-        return "mentor"
-        
-    try:
-        kc = int(p.get("kc") or p.get("KC") or 0)
-    except Exception:
-        kc = 0
-
-    if kc <= 1:
-        return "new"
-    if 2 <= kc <= 25:
-        return "learner"
-    if 26 <= kc <= 149:
-        return "proficient"
-    if kc >= 150:
-        return "highly proficient"
-    return "unknown"
-
-
-def prof_rank(p: dict) -> int:
-    """Returns the numeric rank for sorting (lower is better)."""
-    # Use the normalized role in case the KC was updated after the Proficiency was set
-    return PROF_ORDER.get(p.get("proficiency", "unknown").lower(), 99)
-
-def scythe_icon(p: dict) -> str:
-    """Returns the emoji icon for scythe status."""
-    return "✅" if p.get("has_scythe") else "❌"
-
-def freeze_icon(p: dict) -> str:
-    """Returns the emoji icon for freeze learning status."""
-    return FREEZE_ICON if str(p.get("learning_freeze")).upper() == "TRUE" else NO_FREEZE_ICON
-
-# --- Sanguine Sunday VC/Channel Config ---
-SANG_VC_CATEGORY_ID = 1376645103803830322  # Category for auto-created team voice channels
-SANG_POST_CHANNEL_ID = 1338295765759688767  # Default text channel to post teams
+SENIOR_STAFF_CHANNEL_ID = 1336473990302142484 # Channel for approval notifications.
+ADMINISTRATOR_ROLE_ID = 1272961765034164318  # Role that can approve actions.
+SENIOR_STAFF_ROLE_ID = 1336473488159936512   # Role that can approve actions.
 
 # --------------------------------------------------
-# 🔹 Sanguine Sunday Signup System
+# 🔹 Sanguine Sunday Signup System (REFACTORED)
 # --------------------------------------------------
 
 SANG_MESSAGE_IDENTIFIER = "Sanguine Sunday Sign Up"
@@ -223,6 +146,7 @@ No matter if you're a learner or an experienced raider, we strongly encourage yo
 Click a button below to sign up for the event.
 - **Raider:** Fill out the form with your KC and gear.
 - **Mentor:** Fill out the form to sign up as a mentor.
+- **Withdraw:** Remove your name from this week's signup list.
 
 The form will remember your answers from past events! 
 You only need to edit Kc's and Roles.
@@ -231,7 +155,34 @@ Event link: <https://discord.com/events/1272629330115297330/1386302870646816788>
 
 ||<@&{MENTOR_ROLE_ID}> <@&{SANG_ROLE_ID}> <@&{TOB_ROLE_ID}>||
 """
+
 LEARNER_REMINDER_IDENTIFIER = "Sanguine Sunday Learner Reminder"
+LEARNER_REMINDER_MESSAGE = f"""\
+# {LEARNER_REMINDER_IDENTIFIER} ⏰ <:sanguine_sunday:1388100187985154130>
+
+This is a reminder for all learners who signed up for Sanguine Sunday!
+
+Please make sure you have reviewed the following guides and have your gear and plugins ready to go:
+• **[ToB Resource Hub](https://discord.com/channels/1272629330115297330/1426262876699496598)**
+• **[Learner Setups](https://discord.com/channels/1272629330115297330/1426263868950450257)**
+• **[Rancour Meta Setups](https://discord.com/channels/1272629330115297330/1426272592452391012)**
+• **[Guides & Plugins](https://discord.com/channels/1272629330115297330/1426263621440372768)**
+
+We look forward to seeing you there!
+"""
+
+# --- Utility to sanitize nickname (remove discord user tag for display) ---
+def sanitize_nickname(name: str) -> str:
+    # Removes common Discord tag patterns like @User#1234 or (User#1234)
+    if not name:
+        return ""
+    # Remove everything in parentheses that might contain user tags
+    name = re.sub(r'\s*\([^)]*#\d{4}\)', '', name)
+    # Remove everything in brackets that might contain user tags
+    name = re.sub(r'\s*\[[^\]]*#\d{4}\]', '', name)
+    # Remove @mention at the start
+    name = re.sub(r'^@', '', name)
+    return name.strip()
 
 
 class UserSignupForm(Modal, title="Sanguine Sunday Signup"):
@@ -295,13 +246,13 @@ class UserSignupForm(Modal, title="Sanguine Sunday Signup"):
             return
         has_scythe_bool = scythe_value in ["yes", "y"]
 
-        # Use KC value to determine Proficiency
+        # --- Re-aligning KC based on new ranges ---
         proficiency_value = ""
-        if kc_value <= 1:
+        if kc_value <= 10:
             proficiency_value = "New"
-        elif 2 <= kc_value <= 25:
+        elif 11 <= kc_value <= 25:
             proficiency_value = "Learner"
-        elif 26 <= kc_value <= 149:
+        elif 26 <= kc_value <= 100:
             proficiency_value = "Proficient"
         else:
             proficiency_value = "Highly Proficient"
@@ -322,13 +273,13 @@ class UserSignupForm(Modal, title="Sanguine Sunday Signup"):
         try:
             cell = sang_sheet.find(user_id, in_column=1)
 
-            # --- Update SangSignups ---
+            # --- UPDATED CHECK ---
             if cell is None:
                 sang_sheet.append_row(row_data)
             else:
                 sang_sheet.update(values=[row_data], range_name=f'A{cell.row}:H{cell.row}') # <-- FIXED
 
-            # --- Update History ---
+            # --- MODIFIED HISTORY WRITE ---
             if history_sheet:
                 try:
                     history_cell = history_sheet.find(user_id, in_column=1)
@@ -340,13 +291,13 @@ class UserSignupForm(Modal, title="Sanguine Sunday Signup"):
                     print(f"🔥 GSpread error on HISTORY (User Form) write: {e}")
             else:
                 print("🔥 History sheet not available, skipping history append.")
-            # --- END HISTORY WRITE ---
+            # --- END MODIFIED ---
 
         except gspread.CellNotFound:
-            sang_sheet.append_row(row_data)
+             sang_sheet.append_row(row_data)
 
-            # --- Update History (on append fail) ---
-            if history_sheet:
+             # --- MODIFIED HISTORY WRITE ---
+             if history_sheet:
                 try:
                     history_cell = history_sheet.find(user_id, in_column=1)
                     if history_cell is None:
@@ -355,9 +306,9 @@ class UserSignupForm(Modal, title="Sanguine Sunday Signup"):
                         history_sheet.update(values=[row_data], range_name=f'A{history_cell.row}:H{history_cell.row}') # <-- FIXED
                 except Exception as e:
                     print(f"🔥 GSpread error on HISTORY (User Form) write: {e}")
-            else:
-                print("🔥 History sheet not available, skipping history append.")
-            # --- END HISTORY WRITE ---
+             else:
+                 print("🔥 History sheet not available, skipping history append.")
+             # --- END MODIFIED ---
 
         except Exception as e:
             print(f"🔥 GSpread error on signup: {e}")
@@ -448,7 +399,7 @@ class MentorSignupForm(Modal, title="Sanguine Sunday Mentor Signup"):
             else:
                  sang_sheet.update(values=[row_data], range_name=f'A{cell.row}:H{cell.row}') # <-- FIXED
 
-            # --- Update History ---
+            # --- MODIFIED HISTORY WRITE ---
             if history_sheet:
                 try:
                     history_cell = history_sheet.find(user_id, in_column=1)
@@ -460,11 +411,11 @@ class MentorSignupForm(Modal, title="Sanguine Sunday Mentor Signup"):
                     print(f"🔥 GSpread error on HISTORY (Mentor Form) write: {e}")
             else:
                 print("🔥 History sheet not available, skipping history append.")
-            # --- END HISTORY WRITE ---
+            # --- END MODIFIED ---
         except gspread.CellNotFound:
             sang_sheet.append_row(row_data)
 
-            # --- Update History (on append fail) ---
+            # --- MODIFIED HISTORY WRITE ---
             if history_sheet:
                 try:
                     history_cell = history_sheet.find(user_id, in_column=1)
@@ -476,7 +427,7 @@ class MentorSignupForm(Modal, title="Sanguine Sunday Mentor Signup"):
                     print(f"🔥 GSpread error on HISTORY (Mentor Form) write: {e}")
             else:
                 print("🔥 History sheet not available, skipping history append.")
-            # --- END HISTORY WRITE ---
+            # --- END MODIFIED ---
         except Exception as e:
             print(f"🔥 GSpread error on mentor signup: {e}")
             await interaction.response.send_message("⚠️ An error occurred while saving your signup.", ephemeral=True)
@@ -490,32 +441,60 @@ class MentorSignupForm(Modal, title="Sanguine Sunday Mentor Signup"):
             f"**Favorite Roles:** {roles_known_value}",
             ephemeral=True
         )
+        
+def get_previous_signup(user_id: str) -> Optional[Dict[str, Any]]:
+    """Fetches the latest signup data for a user from the HISTORY sheet."""
+    if not history_sheet: # <-- MODIFIED
+        print("History sheet not available in get_previous_signup.") # <-- MODIFIED & DEBUG removed
+        return None
+    try:
+        all_records = history_sheet.get_all_records() # <-- MODIFIED
+        if not all_records:
+             print("No records found in history_sheet.") # <-- MODIFIED & DEBUG removed
+             return None
 
+        for record in reversed(all_records):
+            sheet_discord_id = record.get("Discord_ID")
+            sheet_discord_id_str = str(sheet_discord_id) if sheet_discord_id is not None else None
+
+            if sheet_discord_id_str == user_id:
+                record["Has_Scythe"] = str(record.get("Has_Scythe", "FALSE")).upper() == "TRUE"
+                record["Learning Freeze"] = str(record.get("Learning Freeze", "FALSE")).upper() == "TRUE"
+                return record
+        print(f"No history match found for user_id: {user_id}") # <-- MODIFIED & DEBUG removed
+        return None
+    except Exception as e:
+        print(f"🔥 GSpread error fetching previous signup for {user_id}: {e}")
+        return None
+
+# --- New Withdrawal Button ---
 class WithdrawalButton(ui.Button):
     def __init__(self):
-        super().__init__(label="Withdraw", style=ButtonStyle.secondary, custom_id="sang_withdraw", emoji="🛑")
+        super().__init__(label="Withdraw", style=ButtonStyle.secondary, custom_id="sang_withdraw", emoji="❌")
 
     async def callback(self, interaction: discord.Interaction):
         user_id = str(interaction.user.id)
+        user_name = interaction.user.display_name
+
         if not sang_sheet:
-            await interaction.response.send_message("⚠️ Error: The Sanguine Sunday signup sheet is not connected.", ephemeral=True)
+            await interaction.response.send_message("⚠️ Error: The Sanguine Signup sheet is not connected.", ephemeral=True)
             return
 
         try:
             cell = sang_sheet.find(user_id, in_column=1)
             
             if cell is None:
-                await interaction.response.send_message("❌ You were not found in this week's signups.", ephemeral=True)
+                await interaction.response.send_message(f"ℹ️ {user_name}, you are not currently signed up for this week's event.", ephemeral=True)
                 return
 
-            # Delete the row from SangSignups
+            # Delete the row from SangSignups sheet (but leave History alone)
             sang_sheet.delete_rows(cell.row)
             
-            # The History sheet remains untouched.
+            await interaction.response.send_message(f"✅ **{user_name}**, you have been successfully withdrawn from this week's Sanguine Sunday signups.", ephemeral=True)
+            print(f"✅ User {user_id} ({user_name}) withdrew from SangSignups.")
 
-            await interaction.response.send_message("✅ You have been withdrawn from this week's Sanguine Sunday signups.", ephemeral=True)
         except Exception as e:
-            print(f"🔥 GSpread error during withdrawal: {e}")
+            print(f"🔥 GSpread error on withdrawal: {e}")
             await interaction.response.send_message("⚠️ An error occurred while processing your withdrawal.", ephemeral=True)
 
 
@@ -569,7 +548,7 @@ class SignupView(View):
                 else:
                     sang_sheet.update(values=[row_data], range_name=f'A{cell.row}:H{cell.row}') # <-- FIXED
 
-                # --- Update History ---
+                # --- MODIFIED HISTORY WRITE ---
                 if history_sheet:
                     try:
                         history_cell = history_sheet.find(user_id, in_column=1)
@@ -581,18 +560,18 @@ class SignupView(View):
                         print(f"🔥 GSpread error on HISTORY (Auto-Mentor) write: {e}")
                 else:
                     print("🔥 History sheet not available, skipping history append.")
-                # --- END HISTORY WRITE ---
+                # --- END MODIFIED ---
 
                 await interaction.followup.send(
                     "✅ **Auto-signed up as Mentor!** (Detected Mentor role).\n"
-                    "Your proficiency is set to Mentor, Favorite Roles to All, and Scythe to Yes.\n"
+                    "Your proficiency is set to Highly Proficient, Favorite Roles to All, and Scythe to Yes.\n"
                     "**If this is incorrect, click the button again to fill out the form.**",
                     ephemeral=True
                 )
             except gspread.CellNotFound:
                  sang_sheet.append_row(row_data)
 
-                 # --- Update History (on append fail) ---
+                 # --- MODIFIED HISTORY WRITE ---
                  if history_sheet:
                     try:
                         history_cell = history_sheet.find(user_id, in_column=1)
@@ -604,11 +583,11 @@ class SignupView(View):
                         print(f"🔥 GSpread error on HISTORY (Auto-Mentor) write: {e}")
                  else:
                      print("🔥 History sheet not available, skipping history append.")
-                 # --- END HISTORY WRITE ---
+                 # --- END MODIFIED ---
 
                  await interaction.followup.send(
                     "✅ **Auto-signed up as Mentor!** (Detected Mentor role).\n"
-                    "Your proficiency is set to Mentor, Favorite Roles to All, and Scythe to Yes.\n"
+                    "Your proficiency is set to Highly Proficient, Favorite Roles to All, and Scythe to Yes.\n"
                     "**If this is incorrect, click the button again to fill out the form.**",
                     ephemeral=True
                 )
@@ -620,114 +599,47 @@ class SignupView(View):
             previous_data["KC"] = ""
             await interaction.response.send_modal(MentorSignupForm(previous_data=previous_data))
 
-# --- Core Matchmaking Algorithm ---
+# --- Helper Functions ---
 
-def matchmaking_algorithm(available_raiders: List[Dict[str, Any]]) -> (List[List[Dict[str, Any]]], List[Dict[str, Any]]):
-    """
-    Reworked algorithm prioritizing Mentor-led teams of 4, with a final merge
-    phase to ensure 'No Man Left Behind'.
-    """
-    if not available_raiders:
-        return [], []
+# --- Sanguine Sunday VC/Channel Config ---
+SANG_VC_CATEGORY_ID = 1376645103803830322 # Category for auto-created team voice channels
+SANG_POST_CHANNEL_ID = 1338295765759688767 # Default text channel to post teams
 
-    # 1. Global Sort and Pool Creation (Mentor -> HP -> Pro -> Learner -> New)
-    available_raiders.sort(
-        key=lambda p: (prof_rank(p), not p.get("has_scythe"), -int(p.get("kc", 0)))
-    )
+def normalize_role(p: dict) -> str:
+    """Returns the normalized proficiency string."""
+    prof = str(p.get("proficiency","")).strip().lower()
+    if prof == "mentor":
+        return "mentor"
+    try:
+        # KC value from the dictionary might be a string (e.g., 'X') or int
+        kc = int(p.get("kc") or p.get("KC") or 0)
+    except Exception:
+        # If it's the 'X' placeholder for auto-mentors, their proficiency is already set above.
+        return prof # returns 'highly proficient', 'proficient', etc. if it was calculated before
 
-    mentors = [p for p in available_raiders if p["proficiency"] == "mentor"]
-    strong = [p for p in available_raiders if p["proficiency"] in ["highly proficient", "proficient"]]
-    learners = [p for p in available_raiders if p["proficiency"] == "learner"]
-    news = [p for p in available_raiders if p["proficiency"] == "new"]
-    
-    # 2. Initialization: Create Teams (N = # of Mentors) and assign Mentors
-    num_mentor_teams = len(mentors)
-    teams = [[] for _ in range(num_mentor_teams)]
-    
-    # Assign one Mentor per team
-    for i in range(num_mentor_teams):
-        teams[i].append(mentors[i])
-    
-    # All other players go into the general pool
-    remaining_pool = strong + learners + news
-    
-    # 3. Anchor & Support Phase (Fill Mentor Teams up to size 4)
-    
-    # 3a. Anchor (New/Learner) Assignment
-    i = 0
-    while news and i < num_mentor_teams:
-        teams[i].append(news.pop(0))
-        i += 1
-    
-    # Fill remaining teams with Learners if no New are left
-    while learners and i < num_mentor_teams:
-        teams[i].append(learners.pop(0))
-        i += 1
-        
-    # 3b. Strong Player Assignment (HP/Pro) - Spread support evenly
-    i = 0
-    while strong:
-        team_index = i % num_mentor_teams
-        if len(teams[team_index]) < 4:
-            teams[team_index].append(strong.pop(0))
-        i += 1
+    # KC ranges from UserSignupForm
+    if kc <= 10:
+        return "new"
+    if 11 <= kc <= 25:
+        return "learner"
+    if 26 <= kc <= 100:
+        return "proficient"
+    return "highly proficient"
 
-    # 4. Fill Mentor Teams up to size 4 (Using leftovers)
-    # The pool is now: strong (leftovers), learners, news
-    leftover_pool = strong + learners + news
-    
-    i = 0
-    while leftover_pool and i < num_mentor_teams:
-        team_index = i
-        if len(teams[team_index]) < 4:
-            teams[team_index].append(leftover_pool.pop(0))
-            i = 0 # Restart inner loop to try filling other small teams
-            continue
-        i += 1
-        
-    # 5. Stranded Cleanup Phase (No Man Left Behind)
-    stranded = leftover_pool
-    
-    # 5a. Create the dedicated non-Mentor team (Team N+1) if more than 3 stranded HP/Pro/Learners are left
-    non_mentor_pool = [p for p in stranded if p["proficiency"] != "new"] # Only Pro/HP/Learners can lead a non-Mentor team
-    stranded_new = [p for p in stranded if p["proficiency"] == "new"]
+PROF_ORDER = {"mentor": 0, "highly proficient": 1, "proficient": 2, "learner": 3, "new": 4}
 
-    if len(non_mentor_pool) >= 3:
-        # Create a non-Mentor team of 4/5
-        new_team = non_mentor_pool[:5]
-        teams.append(new_team)
-        stranded = non_mentor_pool[5:] + stranded_new
-    else:
-        # All non-New are stranded + all New are stranded
-        stranded = non_mentor_pool + stranded_new
+def prof_rank(p: dict) -> int:
+    """Returns a numerical rank for sorting."""
+    return PROF_ORDER.get(normalize_role(p), 99)
 
+def scythe_icon(p: dict) -> str:
+    """Returns Scythe checkmark or cross."""
+    return "✅" if p.get("has_scythe") else "❌"
 
-    # 5b. Final Placement (Guaranteed, No Man Left Behind)
-    # Force remaining stranded players into the smallest existing teams.
-    while stranded:
-        # Sort teams by size ascending
-        teams.sort(key=len)
-        target_team = teams[0]
-        player = stranded.pop(0)
-        
-        # Check against the only non-negotiable hard constraint (3-man teams):
-        if len(target_team) == 2 and player["proficiency"] == "learner" and not player["has_scythe"]:
-            # If the smallest team is size 2, and the player is an unsupported learner,
-            # try to put them in the second smallest team instead.
-            if len(teams) > 1 and len(teams[1]) < 5:
-                target_team = teams[1]
-            # If still only the 2-man team, place them anyway (Rule: No Man Left Behind)
-        
-        target_team.append(player)
+def freeze_icon(p: dict) -> str:
+    """Returns Freeze Learner icon or empty string."""
+    return "❄️ Learn Freeze" if p.get("learning_freeze") else ""
 
-    # Filter out empty teams that may have been created
-    teams = [t for t in teams if t]
-    
-    # The list of stranded users is now truly empty (by rule)
-    return teams, []
-
-
-# --- Discord Bot Commands and Events (REMAINDER OF THE FILE) ---
 async def find_latest_signup_message(channel: discord.TextChannel) -> Optional[discord.Message]:
     """Finds the most recent Sanguine Sunday signup message in a channel."""
     async for message in channel.history(limit=100):
@@ -735,6 +647,7 @@ async def find_latest_signup_message(channel: discord.TextChannel) -> Optional[d
             return message
     return None
 
+# --- Core Functions ---
 async def post_signup(channel: discord.TextChannel):
     """Posts the main signup message with the signup buttons."""
     await channel.send(SANG_MESSAGE, view=SignupView())
@@ -834,14 +747,160 @@ def parse_roles(roles_str: str) -> (bool, bool):
     knows_melee = any(s in roles_str for s in ["melee", "mdps", "meleer"])
     return knows_range, knows_melee
 
-last_generated_teams = [] # Global variable to store teams for export
 
-# --- Matchmaking Slash Command ---
+# --- New Matchmaking Logic following strict requirements ---
+def matchmaking_algorithm(available_raiders: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    
+    # 1. Create player pools and sort them globally
+    available_raiders.sort(
+        key=lambda p: (prof_rank(p), not p.get("has_scythe"), -int(p.get("kc", 0)))
+    )
+
+    mentors = [p for p in available_raiders if normalize_role(p) == "mentor"]
+    strong_pool = [p for p in available_raiders if prof_rank(p) <= PROF_ORDER["proficient"]] # HP/Pro
+    learners = [p for p in available_raiders if normalize_role(p) == "learner"]
+    news = [p for p in available_raiders if normalize_role(p) == "new"]
+
+    # Remove Mentors from strong pool if they snuck in (they shouldn't if filters are right)
+    strong_pool = [p for p in strong_pool if normalize_role(p) != 'mentor'] 
+    
+    # Sort strong pool for better distribution
+    strong_pool.sort(key=lambda p: (prof_rank(p), -int(p.get("kc", 0))))
+    
+    # 2. Team Initialization: Create one team per Mentor.
+    if not mentors:
+        # If no mentors, we can only make teams of 5 from the strongest players available.
+        # This is outside the primary scope but prevents a crash.
+        if len(available_raiders) >= 4:
+            teams = [available_raiders[i:i + 5] for i in range(0, len(available_raiders), 5)]
+            return teams, []
+        return [], available_raiders
+        
+    num_teams = len(mentors)
+    teams = [[] for _ in range(num_teams)]
+    
+    # 3. Anchor Assignment: Mentor + New/Learner + HP/Pro Support
+    
+    # 3a. Assign Mentors (Pass 1)
+    # Use a copy of mentors to initialize teams, then remove from source list
+    for i in range(num_teams):
+        teams[i].append(mentors[i])
+    mentors_source = mentors[:] # Keep a clean list of all mentors
+    mentors = [] # Empty the source list
+
+    # 3b. Assign New players (Pass 2) - Prioritize placing 1 New player per team
+    for i in range(num_teams):
+        if news:
+            teams[i].append(news.pop(0))
+        elif learners:
+             # If no new, give the team a learner instead
+            teams[i].append(learners.pop(0))
+
+    # 3c. Assign 1 Pro/HP to every Mentor team (Pass 3) - Provide support layer
+    # Distribute strongest first (strong_pool is already sorted)
+    for i in range(num_teams):
+        if strong_pool:
+            teams[i].append(strong_pool.pop(0))
+    
+    # 4. Fill remaining spots with leftovers (HP/Pro, Learners, New)
+    
+    # Consolidated pool of remaining players, prioritized for filling.
+    leftovers = strong_pool + learners + news
+    
+    # Distribute remaining players round-robin, prioritizing size 4 teams
+    current_team_idx = 0
+    while leftovers:
+        player = leftovers.pop(0)
+        
+        # Find the smallest team that is under size 5
+        # Sort by current size (ascending) to promote balance
+        target_indices = sorted(range(num_teams), key=lambda idx: len(teams[idx]))
+        placed = False
+
+        for target_idx in target_indices:
+            target_team = teams[target_idx]
+            if len(target_team) < 5:
+                
+                # Check 1: No New in 5-man team (Must be size 4 or less)
+                is_new_player = normalize_role(player) == 'new'
+                if is_new_player and len(target_team) == 4:
+                    continue # Skip this team, cannot make size 5 with a New player
+                
+                # Check 2: No two Freeze Learners together
+                freeze_conflict = player.get('learning_freeze') and any(p.get('learning_freeze') for p in target_team)
+                if freeze_conflict:
+                    continue
+                
+                # Place player
+                target_team.append(player)
+                placed = True
+                break
+        
+        if not placed:
+            # If player couldn't be placed, put them back and stop filling (will become stranded)
+            leftovers.insert(0, player)
+            break 
+            
+    # 5. Final Cleanup and Stranded Logic
+    
+    # Remaining players are the final leftovers (stranded)
+    stranded = leftovers 
+    
+    # Try to form a single last team of 3 or 4 from stranded players
+    if len(stranded) >= 3 and len(stranded) <= 4:
+        # Check 3-man team rule (no New or Learner w/out Scythe)
+        if len(stranded) == 3:
+            has_new = any(normalize_role(p) == 'new' for p in stranded)
+            has_unsupported_learner = any(normalize_role(p) == 'learner' and not p.get('has_scythe') for p in stranded)
+            
+            if not has_new and not has_unsupported_learner:
+                teams.append(stranded)
+                stranded = []
+        # If 4 leftovers, just form a team (as long as it doesn't violate the 3-man rules)
+        elif len(stranded) == 4:
+             teams.append(stranded)
+             stranded = []
+
+    # 6. Final Validation Pass (Filter teams that violate hard rules)
+    final_teams = []
+    
+    for team in teams:
+        team_size = len(team)
+        
+        # Must be size 3 or more to be a valid raiding team
+        if team_size < 3:
+            # Add small teams to stranded pool for reporting
+            stranded.extend(team)
+            continue 
+
+        # Rule Check 1: No New in 3s or 5s.
+        has_new = any(normalize_role(p) == 'new' for p in team)
+        if has_new and team_size in (3, 5):
+            stranded.extend(team)
+            continue
+
+        # Rule Check 2: No Learner in 3s without Scythe
+        has_unsupported_learner = any(normalize_role(p) == 'learner' and not p.get('has_scythe') for p in team)
+        if has_unsupported_learner and team_size == 3:
+            # This is a bit aggressive but ensures safety: if a learner is in a 3-man without scythe, the team is invalid
+            stranded.extend(team)
+            continue
+            
+        # Rule Check 3: No two Freeze Learners together.
+        freeze_count = sum(1 for p in team if p.get('learning_freeze'))
+        if freeze_count > 1:
+            stranded.extend(team)
+            continue
+            
+        final_teams.append(team)
+        
+    return final_teams, stranded
+
+# --- Matchmaking Slash Command (REWORKED + Highly Proficient) ---
 @bot.tree.command(name="sangmatch", description="Create ToB teams from signups in a voice channel.")
 @app_commands.checks.has_role(STAFF_ROLE_ID)
 @app_commands.describe(voice_channel="Optional: The voice channel to pull users from. If omitted, uses all signups.")
 async def sangmatch(interaction: discord.Interaction, voice_channel: Optional[discord.VoiceChannel] = None):
-    global last_generated_teams
     if not sang_sheet:
         await interaction.response.send_message("⚠️ Error: The Sanguine Sunday sheet is not connected.", ephemeral=True)
         return
@@ -849,10 +908,10 @@ async def sangmatch(interaction: discord.Interaction, voice_channel: Optional[di
     await interaction.response.defer(ephemeral=False) # Send to channel
 
     # --- 1. Get users in the specified voice channel ---
-    vc_member_ids = None # <-- ADDED
-    channel_name = "All Signups" # <-- ADDED
+    vc_member_ids = None 
+    channel_name = "All Signups" 
 
-    if voice_channel: # <-- ADDED IF BLOCK
+    if voice_channel: 
         channel_name = voice_channel.name
         if not voice_channel.members:
             await interaction.followup.send(f"⚠️ No users are in {voice_channel.mention}.")
@@ -879,119 +938,129 @@ async def sangmatch(interaction: discord.Interaction, voice_channel: Optional[di
     for signup in all_signups_records:
         user_id = str(signup.get("Discord_ID"))
         
-        # --- MODIFIED VC CHECK ---
         # If vc_member_ids is set (a VC was provided), filter by it.
         if vc_member_ids and user_id not in vc_member_ids:
-            continue # Skip this user, not in the specified VC
+             continue # Skip this user, not in the specified VC
         
         roles_str = signup.get("Favorite Roles", "")
         knows_range, knows_melee = parse_roles(roles_str)
         kc_raw = signup.get("KC", 0) # Get KC value, default to 0
+        
         try:
-            # Convert KC to int, handle potential non-numeric values (like 'N/A' or 'X' for mentors)
             kc_val = int(kc_raw)
         except (ValueError, TypeError):
-            # For Mentors with 'X' or other non-numbers, treat KC as very high for sorting purposes
             kc_val = 9999 if signup.get("Proficiency", "").lower() == 'mentor' else 0
 
-
-        # --- Determine Proficiency including Highly Proficient ---
-        # Use the value from the sheet if it's 'Mentor', otherwise calculate based on KC
         proficiency_val = signup.get("Proficiency", "").lower()
         if proficiency_val != 'mentor': # Recalculate if not mentor (in case KC changed)
-            if kc_val <= 1:
+            if kc_val <= 10:
                 proficiency_val = "new"
-            elif 2 <= kc_val <= 25:
+            elif 11 <= kc_val <= 25:
                 proficiency_val = "learner"
-            elif 26 <= kc_val <= 149:
+            elif 26 <= kc_val <= 100:
                 proficiency_val = "proficient"
-            else: # 150+ KC
+            else: # 100+ KC
                 proficiency_val = "highly proficient"
 
         available_raiders.append({
             "user_id": user_id,
             "user_name": sanitize_nickname(signup.get("Discord_Name")),
-            "proficiency": proficiency_val, # Use calculated/sheet proficiency
-            "kc": kc_val, # Use the integer KC value (or default)
+            "proficiency": proficiency_val,
+            "kc": kc_val,
             "has_scythe": str(signup.get("Has_Scythe", "FALSE")).upper() == "TRUE",
             "roles_known": roles_str,
             "learning_freeze": str(signup.get("Learning Freeze", "FALSE")).upper() == "TRUE",
             "knows_range": knows_range,
             "knows_melee": knows_melee
-            })
+        })
 
     if not available_raiders:
-        await interaction.followup.send(f"⚠️ None of the users in {voice_channel.mention} have signed up for the event.")
+        await interaction.followup.send(f"⚠️ None of the users in {voice_channel.mention} have signed up for the event." if voice_channel else "⚠️ No eligible signups.")
         return
 
-    # --- 4. Matchmaking Logic ---
-    teams, stranded = matchmaking_algorithm(available_raiders)
+    # --- 4. RUN MATCHMAKING ALGORITHM ---
+    teams, stranded_players = matchmaking_algorithm(available_raiders)
     
-    # Store globally for export command
-    last_generated_teams = teams
-
-    # --- Create voice channels under SanguineSunday – Team X pattern ---
+    # --- 5. Format and send output ---
     guild = interaction.guild
+    
+    # --- Create voice channels under SanguineSunday – Team X pattern ---
     category = guild.get_channel(SANG_VC_CATEGORY_ID)
-    
-    # Clean up old channels first
-    if category and hasattr(category, "channels"):
-        for ch in list(category.channels):
-            if isinstance(ch, discord.VoiceChannel) and ch.name.startswith("SanguineSunday – Team "):
-                 try:
-                    await ch.delete(reason="New Sanguine Matchmaking Run Cleanup")
-                 except Exception:
-                    pass
-
-    # Create new channels
-    for i in range(len(teams)):
-        if category and hasattr(category, "create_voice_channel"):
+    if category and hasattr(category, "create_voice_channel"):
+        for i in range(len(teams)):
             try:
-                await category.create_voice_channel(name=f"SanguineSunday – Team {i+1}")
-            except Exception:
-                pass # non-fatal
+                await category.create_voice_channel(name=f"SanguineSunday – Team {i+1}", user_limit=5)
+            except Exception as e:
+                print(f"Error creating VC: {e}") 
 
-    # Determine post channel (testing override allowed)
-    post_channel = guild.get_channel(SANG_POST_CHANNEL_ID) or interaction.channel
-    
+    # Determine post channel
+    post_channel = interaction.channel
+
     embed = discord.Embed(
         title=f"Sanguine Sunday Teams - {channel_name}",
-        description=f"Created {len(teams)} team(s) from {len(available_raiders)} available signed-up users.",
+        description=f"Created {len(teams)} valid team(s) from {len(available_raiders)} available signed-up users.",
         color=discord.Color.red()
     )
 
-    def user_line(p: dict) -> str:
-        uid = int(p["user_id"])
-        member = guild.get_member(uid)
-        mention = member.mention if member else f"<@{uid}>"
-        nickname = member.display_name if member else p.get("user_name", f"User {uid}")
-        role_text = p.get("proficiency", "Unknown").replace(" ", "-").capitalize().replace("-", " ")
-        kc_raw = p.get("kc", 0)
-        
-        # Only show KC if it's a number > 0 and the player is not a Mentor
-        kc_display = f"({kc_raw} KC)" if isinstance(kc_raw, int) and kc_raw > 0 and role_text != "Mentor" else ""
-        
-        return f"{mention} **({nickname})** • **{role_text}** {kc_display} • {scythe_icon(p)} Scythe • {freeze_icon(p)} Freeze"
+    if not teams:
+        embed.description = "Could not form any valid teams with the available players."
 
     # Sort each team's display Mentor → HP → Pro → Learner → New
     for i, team in enumerate(teams, start=1):
         team_sorted = sorted(team, key=prof_rank)
-        lines = [user_line(p) for p in team_sorted]
         
-        team_size_label = f"Team {i} (Size: {len(team)})"
-        embed.add_field(name=team_size_label, value="\n".join(lines) if lines else "—", inline=False)
+        # Resolve nickname/mention and format
+        team_details = []
+        for p in team_sorted:
+            uid = int(p["user_id"])
+            member = guild.get_member(uid)
+            mention = member.mention if member else f"<@{uid}>"
+            
+            role_text = p.get("proficiency", "Unknown").replace(" ", "-").capitalize().replace("-", " ")
+            kc_raw = p.get("kc", 0)
+            
+            # Hide the fake KC for auto-signed mentors (kc=9999)
+            kc_text = f"({kc_raw} KC)" if isinstance(kc_raw, int) and kc_raw > 0 and role_text != "Mentor" and kc_raw != 9999 else ""
+            
+            scythe = scythe_icon(p)
+            freeze = freeze_icon(p)
+            
+            team_details.append(
+                f"{mention} • **{role_text}** {kc_text} • {scythe} Scythe {freeze}"
+            )
+            
+        embed.add_field(name=f"Team {i} (Size: {len(team)})", value="\n".join(team_details) if team_details else "—", inline=False)
 
-    # If players remain stranded (though the logic attempts to prevent this)
-    if stranded:
-        mentions = [guild.get_member(int(p['user_id'])).mention for p in stranded if guild.get_member(int(p['user_id']))]
-        names = [p.get('user_name') for p in stranded]
-        
+    # If a VC was provided, show unassigned
+    unassigned_users_in_vc = set()
+    if vc_member_ids:
+        assigned_ids = {p["user_id"] for t in teams for p in t}
+        unassigned_users_in_vc = vc_member_ids - assigned_ids
+    
+    # Check for players who signed up but were left over (not in a final_teams list)
+    
+    if unassigned_users_in_vc or stranded_players:
+        mentions = []
+        # Add users who were in VC but not signed up
+        for uid in unassigned_users_in_vc:
+            m = guild.get_member(int(uid))
+            mentions.append(f"{m.mention} (VC/No Signup)" if m else f"<@{uid}> (VC/No Signup)")
+
+        # Add users who signed up but weren't placed in a valid team
+        for p in stranded_players:
+            uid = int(p["user_id"])
+            m = guild.get_member(uid)
+            mentions.append(f"{m.mention} (Stranded)" if m else f"<@{uid}> (Stranded)")
+            
         embed.add_field(
-            name=f"⚠️ Stranded Players ({len(stranded)} total)",
-            value=" ".join(mentions) or ", ".join(names),
+            name="Unassigned/Stranded Users",
+            value="\n".join(mentions),
             inline=False
         )
-
+    
+    # Store teams globally for /sangexport
+    global last_generated_teams
+    last_generated_teams = teams
 
     await interaction.followup.send(embed=embed)
 
@@ -1002,11 +1071,13 @@ def format_player_line_plain(guild: discord.Guild, p: dict) -> str:
     role_text = p.get("proficiency", "Unknown").replace(" ", "-").capitalize().replace("-", " ")
     kc_raw = p.get("kc", 0)
     
-    # Only show KC if it's a number > 0 and the player is not a Mentor
-    kc_display = f"({kc_raw} KC)" if isinstance(kc_raw, int) and kc_raw > 0 and role_text != "Mentor" else ""
+    # Hide the fake KC for auto-signed mentors (kc=9999)
+    kc_text = f"({kc_raw} KC)" if isinstance(kc_raw, int) and kc_raw > 0 and role_text != "Mentor" and kc_raw != 9999 else ""
     
-    return f"{nickname} • **{role_text}** {kc_display} • {scythe_icon(p)} Scythe • {freeze_icon(p)} Freeze"
-
+    scythe = scythe_icon(p)
+    freeze = freeze_icon(p)
+    
+    return f"{nickname} • **{role_text}** {kc_text} • {scythe} Scythe {freeze}"
 
 @bot.tree.command(name="sangmatchtest", description="Create ToB teams without pinging or creating voice channels; show plain-text nicknames.")
 @app_commands.checks.has_role(STAFF_ROLE_ID)
@@ -1019,7 +1090,6 @@ async def sangmatchtest(
     voice_channel: Optional[discord.VoiceChannel] = None,
     channel: Optional[discord.TextChannel] = None
 ):
-    global last_generated_teams
     if not sang_sheet:
         await interaction.response.send_message("⚠️ Error: The Sanguine Sunday sheet is not connected.", ephemeral=True)
         return
@@ -1057,6 +1127,7 @@ async def sangmatchtest(
         roles_str = signup.get("Favorite Roles", "")
         knows_range, knows_melee = parse_roles(roles_str)
         kc_raw = signup.get("KC", 0)
+        
         try:
             kc_val = int(kc_raw)
         except (ValueError, TypeError):
@@ -1064,11 +1135,11 @@ async def sangmatchtest(
 
         proficiency_val = signup.get("Proficiency", "").lower()
         if proficiency_val != 'mentor':
-            if kc_val <= 1:
+            if kc_val <= 10:
                 proficiency_val = "new"
-            elif 2 <= kc_val <= 25:
+            elif 11 <= kc_val <= 25:
                 proficiency_val = "learner"
-            elif 26 <= kc_val <= 149:
+            elif 26 <= kc_val <= 100:
                 proficiency_val = "proficient"
             else:
                 proficiency_val = "highly proficient"
@@ -1089,42 +1160,51 @@ async def sangmatchtest(
         await interaction.followup.send(f"⚠️ None of the users in {voice_channel.mention} have signed up for the event." if voice_channel else "⚠️ No eligible signups.")
         return
 
-    # --- 4. Matchmaking Logic ---
-    teams, stranded = matchmaking_algorithm(available_raiders)
+    # --- RUN MATCHMAKING ALGORITHM ---
+    teams, stranded_players = matchmaking_algorithm(available_raiders)
     
-    # Store globally for export command
-    last_generated_teams = teams
-
+    # --- Format Output ---
     guild = interaction.guild
-    post_channel = channel or guild.get_channel(SANG_POST_CHANNEL_ID) or interaction.channel
+    post_channel = channel or interaction.channel
+    
     embed = discord.Embed(
         title=f"Sanguine Sunday Teams (Test, no pings/VC) - {channel_name}",
-        description=f"Created {len(teams)} team(s) from {len(available_raiders)} available signed-up users.",
+        description=f"Created {len(teams)} valid team(s) from {len(available_raiders)} available signed-up users.",
         color=discord.Color.dark_gray()
     )
+    
     for i, team in enumerate(teams, start=1):
         team_sorted = sorted(team, key=prof_rank)
         lines = [format_player_line_plain(guild, p) for p in team_sorted]
-        
-        team_size_label = f"Team {i} (Size: {len(team)})"
-        embed.add_field(name=team_size_label, value="\n".join(lines) if lines else "—", inline=False)
+        embed.add_field(name=f"Team {i} (Size: {len(team)})", value="\n".join(lines) if lines else "—", inline=False)
 
-    if stranded:
-        names = [p.get('user_name') for p in stranded]
-        
-        embed.add_field(
-            name=f"⚠️ Stranded Players ({len(stranded)} total)",
-            value=", ".join(names),
-            inline=False
-        )
+    if vc_member_ids:
+        assigned_ids = {p["user_id"] for t in teams for p in t}
+        unassigned_ids = [uid for uid in vc_member_ids or [] if uid not in assigned_ids]
+        if unassigned_ids or stranded_players:
+            names = []
+            # Add users who were in VC but not signed up
+            for uid in unassigned_ids:
+                m = guild.get_member(int(uid))
+                names.append(f"{m.display_name} (VC/No Signup)" if m else f"User {uid} (VC/No Signup)")
+
+            # Add users who signed up but weren't placed in a valid team
+            for p in stranded_players:
+                names.append(f"{p['user_name']} (Stranded)")
+            
+            embed.add_field(
+                name="Unassigned/Stranded Users",
+                value="\n".join(names),
+                inline=False
+            )
+
+    # Store teams globally for /sangexport
+    global last_generated_teams
+    last_generated_teams = teams
 
     await post_channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
     await interaction.followup.send("✅ Posted no-ping test teams (no voice channels created).", ephemeral=True)
 
-
-# --- Remaining Commands and Tasks (Left as-is) ---
-
-from pathlib import Path
 
 @bot.tree.command(name="sangexport", description="Export the most recently generated teams to a text file.")
 @app_commands.checks.has_any_role("Administrators", "Clan Staff", "Senior Staff", "Staff", "Trial Staff")
@@ -1139,18 +1219,21 @@ async def sangexport(interaction: discord.Interaction):
     guild = interaction.guild
 
     def resolve_discord_id(p: dict):
-        # Fallback logic to get ID since we don't have member list cached here
+        sname = sanitize_nickname(p.get("user_name", ""))
+        mid = find_member_id_by_sanitized_nickname(guild, sname)
+        if mid:
+            return mid
         uid_str = str(p.get("user_id") or p.get("Discord_ID") or "")
         return int(uid_str) if uid_str.isdigit() else None
 
     lines = []
     for i, team in enumerate(teams, start=1):
-        lines.append(f"Team {i} (Size: {len(team)})")
+        lines.append(f"Team {i}")
         for p in team:
             sname = sanitize_nickname(p.get("user_name", "Unknown"))
-            mid = resolve_discord_id(p)
+            mid = p.get("user_id") # Use the ID directly from the dict
             id_text = str(mid) if mid is not None else "UnknownID"
-            lines.append(f"  - {sname} — ID: {id_text} ({p.get('proficiency', 'Unknown')})")
+            lines.append(f"  - {sname} — ID: {id_text}")
         lines.append("")
 
     txt = "\n".join(lines)
@@ -1207,6 +1290,7 @@ async def sangmatch_error(interaction: discord.Interaction, error: app_commands.
 
 
 # --- Scheduled Tasks ---
+SANG_SHEET_HEADER = ["Discord_ID", "Discord_Name", "Favorite Roles", "KC", "Has_Scythe", "Proficiency", "Learning Freeze", "Timestamp"]
 
 @tasks.loop(time=dt_time(hour=11, minute=0, tzinfo=CST))
 async def scheduled_post_signup():
@@ -1241,7 +1325,7 @@ async def scheduled_clear_sang_sheet():
 
 @scheduled_post_signup.before_loop
 @scheduled_post_reminder.before_loop
-@scheduled_clear_sang_sheet.before_loop
+@scheduled_clear_sang_sheet.before_loop # <-- ADDED
 async def before_scheduled_tasks():
     await bot.wait_until_ready()
 
@@ -1260,9 +1344,9 @@ async def on_ready():
         scheduled_post_reminder.start()
         print("✅ Started scheduled reminder task.")
     
-    if not scheduled_clear_sang_sheet.is_running():
-        scheduled_clear_sang_sheet.start()
-        print("✅ Started scheduled sang sheet clear task.")
+    if not scheduled_clear_sang_sheet.is_running(): # <-- ADDED
+        scheduled_clear_sang_sheet.start() # <-- ADDED
+        print("✅ Started scheduled sang sheet clear task.") # <-- ADDED
     
     try:
         synced = await bot.tree.sync()
